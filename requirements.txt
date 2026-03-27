@@ -6,7 +6,6 @@ anthropic>=0.30.0
 
 # Embeddings (local)
 sentence-transformers>=3.0.0
-FlagEmbedding>=1.0.0
 
 # Data processing
 pandas>=2.0.0

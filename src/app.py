@@ -49,7 +49,7 @@ init_error: str | None = None
 contact_registry = None
 MIN_CALIBRATION_TASKS = 5
 
-# --- 情侣分身版（本目录为独立副本 wechat-twin-partner）---
+# --- 情侣分身版 ---
 PARTNER_PERSONA_SELF_ID = "couple_self"
 PARTNER_PERSONA_PARTNER_ID = "couple_partner"
 PARTNER_MIN_TRAIN_MESSAGES = 30
@@ -2743,6 +2743,8 @@ def build_ui() -> gr.Blocks:
                 return "", "", "", "openai"
 
         def _save_api(provider, model, key, base_url):
+            if not (key or "").strip():
+                return '<span style="color:#f87171">API Key 不能为空</span>'
             try:
                 cfg = yaml.safe_load(open(CONFIG_PATH, encoding="utf-8")) or {}
             except Exception:
@@ -2755,7 +2757,27 @@ def build_ui() -> gr.Blocks:
             cfg["api"]["base_url"] = (base_url or "").strip() or None
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-            return '<span style="color:#65a88a">✓ 已保存到 config.yaml，重启后生效。</span>'
+
+            global components, init_error, contact_registry, session_mgr, persona_mgr
+            try:
+                _cfg = load_config()
+                components = init_components(_cfg)
+                from src.engine.session import SessionManager
+                session_mgr = SessionManager(directory="data/sessions")
+                from src.engine.persona import PersonaManager
+                persona_mgr = PersonaManager(directory="data/personas")
+                from src.data.contact_registry import ContactRegistry
+                contact_registry = ContactRegistry()
+                ensure_couple_personas()
+                import threading
+                threading.Thread(target=components["embedder"].warmup, daemon=True).start()
+                init_error = None
+                logger.info("API 配置保存后重新初始化成功")
+                return '<span style="color:#65a88a">✓ 已保存并初始化完成，可以开始使用。</span>'
+            except Exception as e:
+                init_error = str(e)
+                logger.error("API 保存后重新初始化失败: %s", e)
+                return f'<span style="color:#65a88a">✓ 已保存。</span><span style="color:#f59e0b"> 初始化失败（{e}），请检查配置后刷新页面。</span>'
 
         _ak, _bu, _md, _pv = _load_api_fields()
         _has_api = bool(_ak)
