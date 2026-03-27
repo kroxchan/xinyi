@@ -1338,6 +1338,67 @@ def run_step1_prepare():
     return '<div class="step-card step-ok">⏳ 正在准备解密工具…</div>', gr.Timer(active=True)
 
 
+def _keys_has_main_message_db(keys: dict) -> bool:
+    """True if all_keys.json contains a key for message/message_N.db (private chat DBs)."""
+    import re as _re
+    pat = _re.compile(r"^message[/\\]message_\d+\.db$")
+    for k in keys:
+        if pat.match(k.replace("\\", "/")):
+            return True
+    return False
+
+
+def run_step2_reextract_instructions():
+    """Show why re-extraction may be needed + platform-specific commands."""
+    import platform as _plat
+
+    repo_dir = Path("vendor/wechat-decrypt").resolve()
+    _sys = _plat.system()
+    bug = (
+        "<div style='background:rgba(245,158,11,.12);border-radius:8px;padding:12px 14px;margin:0 0 14px;"
+        "border-left:3px solid #d97706;font-size:.92em;line-height:1.75'>"
+        "<b>常见问题：</b>私聊消息在 <code>message/message_0.db</code>、<code>message_1.db</code> … "
+        "若提取时微信未在运行、或扫描不完整，这些库<strong>没有对应密钥</strong>，解密会跳过，"
+        "「选择 TA」扫描联系人可能为 <b>0</b>。请<strong>保持微信已登录并运行</strong>后，在终端重新执行下方命令，"
+        "再点「重新检测密钥」，最后在第 3 步重新解密。"
+        "</div>"
+    )
+    _code = (
+        "<div style='background:#1e1e2e;color:#cdd6f4;border-radius:8px;"
+        "padding:14px 16px;font-family:monospace;font-size:.88em;margin:10px 0;user-select:all;white-space:pre-wrap'>"
+    )
+    if _sys == "Windows":
+        cmd = "cd /d {}\npython find_all_keys_windows.py".format(str(repo_dir))
+        extra = (
+            "<p style='margin:10px 0 0;font-size:.85em;opacity:.8'>"
+            "请用<b>管理员</b>终端运行（与启动心译同一方式）。看到 <code>Saved to all_keys.json</code> 后回到此处。"
+            "</p>"
+        )
+    elif _sys == "Linux":
+        cmd = "cd {} && sudo python3 find_all_keys.py".format(str(repo_dir))
+        extra = (
+            "<p style='margin:10px 0 0;font-size:.85em;opacity:.8'>"
+            "看到 <code>Saved to all_keys.json</code> 后回到此处。"
+            "</p>"
+        )
+    else:
+        cmd = "cd {} && sudo ./find_all_keys_macos".format(str(repo_dir))
+        extra = (
+            "<p style='margin:10px 0 0;font-size:.85em;opacity:.8'>"
+            "若 C 版不存在，可试：<code>sudo python3 find_all_keys.py</code>（部分 macOS 版本会提示不支持，请以仓库说明为准）。"
+            "看到 <code>Saved to all_keys.json</code> 后回到此处。"
+            "</p>"
+        )
+    return (
+        bug
+        + "<div style='font-weight:600;margin-bottom:6px'>请在本机终端执行：</div>"
+        + _code
+        + cmd
+        + "</div>"
+        + extra
+    )
+
+
 def run_step2_check_keys():
     """Step 2: detect if keys file exists after user runs the command manually."""
     keys_file = Path("vendor/wechat-decrypt/all_keys.json").resolve()
@@ -1354,11 +1415,20 @@ def run_step2_check_keys():
         count = len(kdata) if isinstance(kdata, dict) else 0
         if count == 0:
             return '<div class="step-card step-fail">✗ 密钥文件为空，请重新提取</div>'
-        return (
+        ok_block = (
             '<div class="step-card step-ok">'
-            "✓ 检测到 {} 个密钥，可以进行第 3 步了"
+            "✓ 检测到 {} 个密钥条目，可以进行第 3 步了"
             "</div>"
         ).format(count)
+        if isinstance(kdata, dict) and not _keys_has_main_message_db(kdata):
+            ok_block += (
+                "<div class='step-card step-fail' style='margin-top:10px'>"
+                "⚠️ <b>未检测到主消息库密钥</b>（<code>message/message_0.db</code> 等）。"
+                "私聊可能无法解密，扫描联系人容易为 0。请点「重新提取密钥」按说明在终端重跑提取（微信保持运行），"
+                "再点「重新检测密钥」，并重新执行第 3 步解密。"
+                "</div>"
+            )
+        return ok_block
     except Exception as e:
         return '<div class="step-card step-fail">✗ 密钥文件读取失败: {}</div>'.format(e)
 
@@ -2923,11 +2993,19 @@ def build_ui() -> gr.Blocks:
                     gr.HTML('<span style="color:#65a88a">✓ 密钥已提取（{} 个）。</span>'.format(init_status.get("key_count", 0)))
                 else:
                     gr.HTML(_build_step2_guide_html(str(repo_dir)))
-                step2_btn = gr.Button(
-                    "✓ 密钥已就绪" if init_status["has_keys"] else "检测密钥",
-                    variant="secondary" if init_status["has_keys"] else "primary",
-                    interactive=not init_status["has_keys"],
+                gr.HTML(
+                    "<div style='font-size:0.82em;opacity:0.88;line-height:1.65;margin:8px 0 0;color:var(--body-text-color)'>"
+                    "<strong>说明：</strong>若 <code>all_keys.json</code> 里缺少 <code>message/message_0.db</code> 等主消息库密钥，"
+                    "私聊无法解密，扫描联系人可能为 0。请保持微信<strong>已登录并运行</strong>后，点「重新提取密钥」查看终端命令，"
+                    "再点「重新检测密钥」，必要时在第 3 步重新解密。"
+                    "</div>"
                 )
+                with gr.Row():
+                    step2_btn = gr.Button(
+                        "重新检测密钥" if init_status["has_keys"] else "检测密钥",
+                        variant="primary" if not init_status["has_keys"] else "secondary",
+                    )
+                    step2_reextract_btn = gr.Button("重新提取密钥", variant="secondary")
                 step2_output = gr.HTML()
 
                 gr.Markdown("---\n#### 解密数据库")
@@ -2981,6 +3059,7 @@ def build_ui() -> gr.Blocks:
 
                 step1_btn.click(fn=run_step1_prepare, outputs=[step1_output, decrypt_timer])
                 step2_btn.click(fn=run_step2_check_keys, outputs=step2_output)
+                step2_reextract_btn.click(fn=run_step2_reextract_instructions, outputs=step2_output)
                 step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output, decrypt_timer])
                 link_btn.click(fn=link_external_dir, inputs=path_input, outputs=[link_result, scan_info])
                 path_input.submit(fn=link_external_dir, inputs=path_input, outputs=[link_result, scan_info])
