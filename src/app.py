@@ -393,7 +393,11 @@ def init_components(config: dict) -> dict:
         twin_mode=_ltm_init(),
     )
 
-    embedder = TextEmbedder(model_name=emb_cfg["model"], device=emb_cfg["device"])
+    embedder = TextEmbedder(
+        model_name=emb_cfg["model"],
+        device=emb_cfg["device"],
+        offline=emb_cfg.get("offline", True),
+    )
     vector_store = VectorStore(persist_dir=paths["chroma_dir"])
     retriever = MemoryRetriever(vector_store, embedder)
 
@@ -1647,6 +1651,20 @@ def _step3_pipeline(runner):
         memory_bank=c.get("memory_bank"),
     )
 
+    # --- 嵌入模型检测 ---
+    _emb = c["embedder"]
+    if _emb.is_model_cached():
+        runner.add(DS("嵌入模型", True, "已就绪"))
+    else:
+        runner.add(DS("嵌入模型", True, "首次使用，正在下载嵌入模型（约 1-2GB）…"))
+        try:
+            _timed(runner, lambda: _emb.download_model(),
+                   lambda e: DS("嵌入模型", True, "下载中… 已等待 {}s".format(e)))
+            runner.update(DS("嵌入模型", True, "嵌入模型下载完成"))
+        except Exception as e:
+            runner.update(DS("嵌入模型", False, "下载失败: {}，请检查网络连接".format(e)))
+            return
+
     # --- 向量化 ---
     vec_count = c["vector_store"].count()
     chroma_sqlite = Path(config["paths"]["chroma_dir"]) / "chroma.sqlite3"
@@ -2091,6 +2109,20 @@ def _import_pipeline(runner):
         c["vector_store"], c["emotion_tracker"],
         memory_bank=c.get("memory_bank"),
     )
+
+    # --- 嵌入模型检测 ---
+    _emb2 = c["embedder"]
+    if _emb2.is_model_cached():
+        runner.add("✓ 嵌入模型已就绪")
+    else:
+        runner.add("⏳ 首次使用，正在下载嵌入模型（约 1-2GB）…")
+        try:
+            _timed(runner, lambda: _emb2.download_model(),
+                   lambda e: "⏳ 下载嵌入模型… 已等待 {}s".format(e))
+            runner.update("✓ 嵌入模型下载完成")
+        except Exception as e:
+            runner.update("⚠ 嵌入模型下载失败: {}，请检查网络连接".format(e))
+            return
 
     # --- 向量化 ---
     vec_count = c["vector_store"].count()

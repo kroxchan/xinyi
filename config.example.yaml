@@ -13,6 +13,7 @@ api:
 embedding:
   model: "shibing624/text2vec-base-chinese"
   device: "cpu"
+  offline: true          # true=优先离线加载，首次缺失时自动下载；false=始终联网加载
 
 # 数据路径
 paths:
