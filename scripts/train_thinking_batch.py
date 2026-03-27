@@ -33,7 +33,7 @@ def _load_api_config():
         return {k: _env(v) for k, v in api.items() if not isinstance(v, dict)}, {
             k: v for k, v in (api.get("headers") or {}).items()
         }
-    return {"api_key": os.environ.get("WECHAT_TWIN_API_KEY", ""), "base_url": None, "model": "gpt-5.4"}, {}
+    return {"api_key": os.environ.get("WECHAT_TWIN_API_KEY", ""), "base_url": None, "model": "gpt-4o"}, {}
 
 SCENARIO_LABELS = {
     "loving": "甜蜜、恋爱、撒娇、表达爱意",
@@ -80,7 +80,7 @@ client = OpenAI(
     base_url=_api.get("base_url") or None,
     default_headers=_headers or None,
 )
-_model = _api.get("model", "gpt-5.4")
+_model = _api.get("model", "gpt-4o")
 
 texts = json.loads(INPUT.read_text("utf-8"))
 conv_block = ""

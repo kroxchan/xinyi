@@ -2,8 +2,8 @@
 api:
   provider: "openai"
   api_key: "${WECHAT_TWIN_API_KEY}"
-  model: "${WECHAT_TWIN_MODEL:gpt-5.4}"
-  extraction_model: "${WECHAT_TWIN_MODEL:gpt-5.4}"
+  model: "${WECHAT_TWIN_MODEL:gpt-4o}"
+  extraction_model: "${WECHAT_TWIN_MODEL:gpt-4o}"
   base_url: "${WECHAT_TWIN_BASE_URL}"
   headers:
     User-Agent: "Mozilla/5.0 (X11; Linux x86_64) OpenClaw/2026.2.14"

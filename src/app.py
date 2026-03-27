@@ -460,7 +460,7 @@ def init_components(config: dict) -> dict:
     emotion_tracker = EmotionTracker(
         emotion_profile,
         api_client=_emo_client,
-        model=api_cfg.get("model", "gpt-5.4"),
+        model=api_cfg.get("model", "gpt-4o"),
     )
 
     from src.memory.memory_bank import MemoryBank
@@ -1070,7 +1070,7 @@ def respond(message: str, chat_history: list[dict], persona_id: str):
                     _api_live = components["config"].get("api", {})
                     mb.extract_from_text(
                         conv_text, components["chat_engine"].client,
-                        _api_live.get("model", "gpt-5.4"),
+                        _api_live.get("model", "gpt-4o"),
                         source="live_chat",
                     )
                     mb.save()
@@ -1505,7 +1505,7 @@ def _step3_pipeline(runner):
         base_url=_api_cfg.get("base_url"),
         default_headers=_api_cfg.get("headers", {}),
     )
-    c["emotion_tracker"] = _ET(emo_profile, api_client=_emo_cl, model=_api_cfg.get("model", "gpt-5.4"))
+    c["emotion_tracker"] = _ET(emo_profile, api_client=_emo_cl, model=_api_cfg.get("model", "gpt-4o"))
 
     # --- 思维训练 ---
     think_path = Path(config["paths"].get("thinking_model_file", "data/thinking_model.txt"))
@@ -1524,7 +1524,7 @@ def _step3_pipeline(runner):
                 base_url=api_cfg.get("base_url"),
                 default_headers=api_cfg.get("headers", {}),
             )
-            tp = _TP(_tp_client, api_cfg.get("model", "gpt-5.4"))
+            tp = _TP(_tp_client, api_cfg.get("model", "gpt-4o"))
             _thinking = _retry_api(
                 lambda: _timed(runner, lambda: tp.train(conversations),
                                lambda e: DS("思维训练", True, "正在训练… 已等待 {}s".format(e))),
@@ -1552,7 +1552,7 @@ def _step3_pipeline(runner):
                 base_url=_s1_api.get("base_url"),
                 default_headers=_s1_api.get("headers", {}),
             )
-            _tp_cog = _TP_cog(_cog_client, _s1_api.get("model", "gpt-5.4"))
+            _tp_cog = _TP_cog(_cog_client, _s1_api.get("model", "gpt-4o"))
             _cog_profile = _retry_api(
                 lambda: _tp_cog.extract_cognitive_profile(conversations),
                 runner, "⚠ 认知参数",
@@ -1583,7 +1583,7 @@ def _step3_pipeline(runner):
                 base_url=_s1_api_eb.get("base_url"),
                 default_headers=_s1_api_eb.get("headers", {}),
             )
-            _tp_eb = _TP_eb(_eb_client, _s1_api_eb.get("model", "gpt-5.4"))
+            _tp_eb = _TP_eb(_eb_client, _s1_api_eb.get("model", "gpt-4o"))
             import src.app as _self_mod
             _cr = getattr(_self_mod, 'contact_registry', None)
             _emo_boundaries = _retry_api(
@@ -1620,7 +1620,7 @@ def _step3_pipeline(runner):
                 base_url=_s1_api_expr.get("base_url"),
                 default_headers=_s1_api_expr.get("headers", {}),
             )
-            _tp_expr = _TP_expr(_expr_client, _s1_api_expr.get("model", "gpt-5.4"))
+            _tp_expr = _TP_expr(_expr_client, _s1_api_expr.get("model", "gpt-4o"))
             _emo_expression = _retry_api(
                 lambda: _tp_expr.extract_emotion_expression_style(conversations),
                 runner, "⚠ 情绪表达",
@@ -1728,7 +1728,7 @@ def _step3_pipeline(runner):
                 base_url=_api_mb.get("base_url"),
                 default_headers=_api_mb.get("headers", {}),
             )
-            _timed(runner, lambda: mb.batch_extract(conversations, _mb_client, _api_mb.get("model", "gpt-5.4")),
+            _timed(runner, lambda: mb.batch_extract(conversations, _mb_client, _api_mb.get("model", "gpt-4o")),
                    lambda e: DS("记忆提取", True, "提取中… 已等待 {}s（当前 {} 条）".format(e, mb.count())))
             high_conf = sum(1 for m in mb.memories if m.confidence >= 0.7)
             runner.update(DS("记忆提取", True, "{} 条记忆（高置信 {} 条）".format(mb.count(), high_conf)))
@@ -1955,7 +1955,7 @@ def _import_pipeline(runner):
         base_url=_api_cfg2.get("base_url"),
         default_headers=_api_cfg2.get("headers", {}),
     )
-    c["emotion_tracker"] = _ET2(emo_p, api_client=_emo_cl2, model=_api_cfg2.get("model", "gpt-5.4"))
+    c["emotion_tracker"] = _ET2(emo_p, api_client=_emo_cl2, model=_api_cfg2.get("model", "gpt-4o"))
 
     # --- 思维训练 ---
     think_path = Path(config["paths"].get("thinking_model_file", "data/thinking_model.txt"))
@@ -1974,7 +1974,7 @@ def _import_pipeline(runner):
                 base_url=api_cfg.get("base_url"),
                 default_headers=api_cfg.get("headers", {}),
             )
-            tp2 = _TP2(_tp2_client, api_cfg.get("model", "gpt-5.4"))
+            tp2 = _TP2(_tp2_client, api_cfg.get("model", "gpt-4o"))
             _thinking2 = _retry_api(
                 lambda: _timed(runner, lambda: tp2.train(conversations),
                                 lambda e: "⏳ 训练思维模型… 已等待 {}s".format(e)),
@@ -2007,7 +2007,7 @@ def _import_pipeline(runner):
                 base_url=_s3_api.get("base_url"),
                 default_headers=_s3_api.get("headers", {}),
             )
-            _tp2_cog = _TP2_cog(_cog_cl2, _s3_api.get("model", "gpt-5.4"))
+            _tp2_cog = _TP2_cog(_cog_cl2, _s3_api.get("model", "gpt-4o"))
             _cog_profile2 = _retry_api(
                 lambda: _timed(runner, lambda: _tp2_cog.extract_cognitive_profile(conversations),
                                lambda e: "⏳ 认知参数提取… 已等待 {}s".format(e)),
@@ -2043,7 +2043,7 @@ def _import_pipeline(runner):
                 base_url=_s3_api_eb.get("base_url"),
                 default_headers=_s3_api_eb.get("headers", {}),
             )
-            _tp3_eb = _TP3_eb(_eb_cl3, _s3_api_eb.get("model", "gpt-5.4"))
+            _tp3_eb = _TP3_eb(_eb_cl3, _s3_api_eb.get("model", "gpt-4o"))
             import src.app as _self_mod3
             _cr3 = getattr(_self_mod3, 'contact_registry', None)
             _emo_boundaries2 = _retry_api(
@@ -2081,7 +2081,7 @@ def _import_pipeline(runner):
                 base_url=_s3_api_expr.get("base_url"),
                 default_headers=_s3_api_expr.get("headers", {}),
             )
-            _tp3_expr = _TP3_expr(_expr_cl3, _s3_api_expr.get("model", "gpt-5.4"))
+            _tp3_expr = _TP3_expr(_expr_cl3, _s3_api_expr.get("model", "gpt-4o"))
             _emo_expression2 = _retry_api(
                 lambda: _timed(runner, lambda: _tp3_expr.extract_emotion_expression_style(conversations),
                                lambda e: "⏳ 情绪表达提取… 已等待 {}s".format(e)),
@@ -2187,7 +2187,7 @@ def _import_pipeline(runner):
                 base_url=_api_mb.get("base_url"),
                 default_headers=_api_mb.get("headers", {}),
             )
-            _timed(runner, lambda: mb.batch_extract(conversations, _mb_client, _api_mb.get("model", "gpt-5.4")),
+            _timed(runner, lambda: mb.batch_extract(conversations, _mb_client, _api_mb.get("model", "gpt-4o")),
                    lambda e: "⏳ 提取记忆… 已等待 {}s（当前 {} 条）".format(e, mb.count()))
             high_conf = sum(1 for m in mb.memories if m.confidence >= 0.7)
             runner.update("✓ 记忆库: {} 条（高置信 {} 条）".format(mb.count(), high_conf))
@@ -3210,7 +3210,8 @@ def build_ui() -> gr.Blocks:
                         return gr.update(choices=[], value=None)
                     choices = []
                     for s in sessions[:15]:
-                        title = (s["title"] or "新对话")[:14]
+                        raw = s["title"] or "新对话"
+                        title = raw[:13] + "…" if len(raw) > 14 else raw
                         choices.append((title, s["id"]))
                     return gr.update(choices=choices, value=selected_id)
 
