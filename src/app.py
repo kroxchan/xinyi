@@ -353,11 +353,14 @@ def load_config() -> dict:
     load_dotenv()
 
     if not CONFIG_PATH.exists():
-        raise FileNotFoundError(
-            f"配置文件 {CONFIG_PATH} 不存在。请先复制示例配置：\n"
-            f"  cp {CONFIG_EXAMPLE} {CONFIG_PATH}\n"
-            f"然后填写 api_key 等必要字段。"
-        )
+        if CONFIG_EXAMPLE.exists():
+            import shutil
+            shutil.copy2(CONFIG_EXAMPLE, CONFIG_PATH)
+            logger.info("已自动从 %s 创建 %s，请在界面中配置 API Key。", CONFIG_EXAMPLE, CONFIG_PATH)
+        else:
+            raise FileNotFoundError(
+                f"配置文件 {CONFIG_PATH} 和示例文件 {CONFIG_EXAMPLE} 均不存在。"
+            )
     with open(CONFIG_PATH, encoding="utf-8") as f:
         raw = yaml.safe_load(f)
     return _resolve_env_vars(raw)
