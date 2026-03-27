@@ -1363,6 +1363,55 @@ def run_step2_check_keys():
         return '<div class="step-card step-fail">✗ 密钥文件读取失败: {}</div>'.format(e)
 
 
+def _decrypt_only_pipeline(runner):
+    """Decrypt databases only (no training). Runs in a background thread."""
+    from src.data.decrypt import WeChatDecryptor, DecryptStep as DS
+
+    c = components
+    config = c["config"]
+    output_dir = config["paths"].get("raw_db_dir", "data/raw")
+    dec = WeChatDecryptor(output_dir=output_dir)
+
+    keys_file = Path("vendor/wechat-decrypt/all_keys.json").resolve()
+    if not keys_file.exists():
+        runner.add(DS("检查密钥", False, "未找到密钥文件，请先完成第 2 步"))
+        return
+    try:
+        with open(keys_file) as f:
+            kdata = json.load(f)
+        count = len(kdata) if isinstance(kdata, dict) else 0
+        runner.add(DS("检查密钥", True, "{} 个密钥".format(count)))
+    except Exception as e:
+        runner.add(DS("检查密钥", False, str(e)))
+        return
+
+    runner.add(DS("数据库解密", True, "正在解密…"))
+    try:
+        step = _timed(runner, lambda: dec.decrypt_databases(),
+                      lambda e: DS("数据库解密", True, "解密中… 已等待 {}s".format(e)))
+        runner.update(step)
+        if not step.ok:
+            return
+    except Exception as e:
+        runner.update(DS("数据库解密", False, str(e)))
+        return
+
+    c["parser"].set_db_dir(output_dir)
+    runner.add(DS("完成", True, "数据库解密成功，请前往「选择 TA」扫描联系人"))
+
+
+def run_step3_decrypt_only():
+    """Step 3: decrypt DBs only (no training). Returns (html, timer_update)."""
+    if components is None:
+        from src.data.decrypt import DecryptStep as DS
+        return _step_html([DS("系统检查", False, "系统未初始化：" + str(init_error))]), gr.Timer(active=False)
+    runner = TrainingRunner.instance()
+    if runner.is_running():
+        return _step_html(runner.get_steps()), gr.Timer(active=True)
+    runner.start(_decrypt_only_pipeline, render_fn=_step_html, mode="step3")
+    return '<div class="step-card step-ok">⏳ 解密启动中…</div>', gr.Timer(active=True)
+
+
 def _step3_pipeline(runner):
     """Step 3 pipeline: decrypt DBs + full training. Runs in a background thread."""
     global contact_registry
@@ -2865,7 +2914,7 @@ def build_ui() -> gr.Blocks:
                 else:
                     gr.HTML(STEP3_GUIDE_HTML)
                 step3_btn = gr.Button(
-                    "✓ 已解密" if _has_decrypted else "开始解密 + 训练",
+                    "✓ 已解密" if _has_decrypted else "开始解密",
                     variant="secondary" if _has_decrypted else "primary",
                     size="lg",
                     interactive=not _has_decrypted,
@@ -2910,7 +2959,7 @@ def build_ui() -> gr.Blocks:
 
                 step1_btn.click(fn=run_step1_prepare, outputs=[step1_output, decrypt_timer])
                 step2_btn.click(fn=run_step2_check_keys, outputs=step2_output)
-                step3_btn.click(fn=run_step3_decrypt_and_train, outputs=[step3_output, decrypt_timer])
+                step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output, decrypt_timer])
                 link_btn.click(fn=link_external_dir, inputs=path_input, outputs=[link_result, scan_info])
                 path_input.submit(fn=link_external_dir, inputs=path_input, outputs=[link_result, scan_info])
 
@@ -2976,22 +3025,8 @@ def build_ui() -> gr.Blocks:
                     outputs=[twin_mode_html],
                 )
 
-                gr.Markdown(
-                    '\n<div style="text-align:center;margin-top:16px">'
-                    '<span style="font-size:1.1em">确认后，前往 <b>「学习」</b> →</span>'
-                    '</div>'
-                )
-
-            # ================================================================
-            # Setup Tab 3: 训练
-            # ================================================================
-            with gr.Tab("学习", id="tab-setup-3"):
-
-                gr.Markdown("### 让心译学会 TA 的语气")
-
-                setup3_status = gr.HTML(value=_wizard_status_html(init_status))
-                refresh_status_btn = gr.Button("刷新状态", size="sm", variant="secondary")
-                refresh_status_btn.click(fn=check_status, outputs=setup3_status)
+                gr.Markdown("---\n#### 开始学习")
+                gr.Markdown("确认对象和训练模式后，点击开始。")
 
                 if is_ready:
                     gr.Markdown(
@@ -3037,42 +3072,6 @@ def build_ui() -> gr.Blocks:
                     return _render_runner(TrainingRunner.instance())
 
                 train_btn.click(fn=import_data, outputs=[train_output, progress_timer])
-
-                # -- one-click reset --
-                gr.Markdown("---\n#### 重置")
-                gr.Markdown("清除所有学习数据后可重新开始。")
-                reset_all_btn = gr.Button("一键重置所有学习数据", variant="stop")
-                reset_all_result = gr.HTML()
-
-                def _reset_all_training():
-                    removed = []
-                    for p in [
-                        "data/persona_profile.yaml", "data/emotion_profile.yaml",
-                        "data/emotion_boundaries.json", "data/emotion_expression.json",
-                        "data/thinking_model.txt", "data/cognitive_profile.json",
-                        "data/beliefs.json", "data/memories.json",
-                        "data/contact_registry.json", "data/task_results.json",
-                    ]:
-                        fp = Path(p)
-                        if fp.exists():
-                            fp.unlink()
-                            removed.append(fp.name)
-                    import shutil
-                    chroma = Path("data/chroma_db")
-                    if chroma.exists():
-                        shutil.rmtree(chroma, ignore_errors=True)
-                        removed.append("chroma_db/")
-                    guidance = Path("data/guidance")
-                    if guidance.exists():
-                        for gf in guidance.glob("*.md"):
-                            gf.unlink()
-                            removed.append("guidance/" + gf.name)
-                    Path("data/task_results.json").write_text('{"completed": {}}', encoding="utf-8")
-                    if not removed:
-                        return '<span style="color:#a8969a">没有需要清除的数据。</span>'
-                    return '<span style="color:#65a88a">✓ 已清除：{}</span>'.format(", ".join(removed))
-
-                reset_all_btn.click(fn=_reset_all_training, outputs=reset_all_result)
 
             # ================================================================
             # Tab: Chat — 心译对话（partner persona + advisor）
@@ -4337,6 +4336,41 @@ def build_ui() -> gr.Blocks:
                     inputs=[sys_api_provider, sys_api_model, sys_api_key, sys_api_base],
                     outputs=sys_save_api_result,
                 )
+
+                gr.Markdown("---\n### 重置学习数据")
+                gr.Markdown("清除所有学习数据后可重新开始。")
+                reset_all_btn = gr.Button("一键重置所有学习数据", variant="stop")
+                reset_all_result = gr.HTML()
+
+                def _reset_all_training():
+                    removed = []
+                    for p in [
+                        "data/persona_profile.yaml", "data/emotion_profile.yaml",
+                        "data/emotion_boundaries.json", "data/emotion_expression.json",
+                        "data/thinking_model.txt", "data/cognitive_profile.json",
+                        "data/beliefs.json", "data/memories.json",
+                        "data/contact_registry.json", "data/task_results.json",
+                    ]:
+                        fp = Path(p)
+                        if fp.exists():
+                            fp.unlink()
+                            removed.append(fp.name)
+                    import shutil
+                    chroma = Path("data/chroma_db")
+                    if chroma.exists():
+                        shutil.rmtree(chroma, ignore_errors=True)
+                        removed.append("chroma_db/")
+                    guidance = Path("data/guidance")
+                    if guidance.exists():
+                        for gf in guidance.glob("*.md"):
+                            gf.unlink()
+                            removed.append("guidance/" + gf.name)
+                    Path("data/task_results.json").write_text('{"completed": {}}', encoding="utf-8")
+                    if not removed:
+                        return '<span style="color:#a8969a">没有需要清除的数据。</span>'
+                    return '<span style="color:#65a88a">✓ 已清除：{}</span>'.format(", ".join(removed))
+
+                reset_all_btn.click(fn=_reset_all_training, outputs=reset_all_result)
 
         # Wire timer & page-load to update both training outputs and tab visibility
         _all_timer_outputs = [
