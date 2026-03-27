@@ -3013,11 +3013,15 @@ def build_ui() -> gr.Blocks:
                     gr.HTML('<span style="color:#65a88a">✓ 数据库已解密（{} 个）。</span>'.format(init_status.get("db_count", 0)))
                 else:
                     gr.HTML(STEP3_GUIDE_HTML)
+                gr.HTML(
+                    "<div style='font-size:0.82em;opacity:0.88;line-height:1.65;margin:8px 0 0'>"
+                    "重新提取密钥或更换数据源后，可随时点「重新解密」覆盖 <code>data/raw</code> 下的解密结果。"
+                    "</div>"
+                )
                 step3_btn = gr.Button(
-                    "✓ 已解密" if _has_decrypted else "开始解密",
+                    "重新解密" if _has_decrypted else "开始解密",
                     variant="secondary" if _has_decrypted else "primary",
                     size="lg",
-                    interactive=not _has_decrypted,
                 )
                 step3_output = gr.HTML()
 
