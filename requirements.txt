@@ -1,0 +1,19 @@
+# Core
+chromadb>=0.5.0
+gradio>=4.0.0
+openai>=1.0.0
+anthropic>=0.30.0
+
+# Embeddings (local)
+sentence-transformers>=3.0.0
+FlagEmbedding>=1.0.0
+
+# Data processing
+pandas>=2.0.0
+jieba>=0.42.1
+pycryptodome>=3.19
+
+# Utils
+pyyaml>=6.0
+python-dotenv>=1.0.0
+rich>=13.0.0

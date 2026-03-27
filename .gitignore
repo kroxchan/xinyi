@@ -1,0 +1,51 @@
+# 个人配置与密钥
+.env
+config.yaml
+
+# 个人训练数据（运行后生成，不提交）
+data/raw/
+data/processed/
+data/chroma_db/
+data/beliefs.json
+data/contacts.json
+data/partner_config.json
+data/persona.yaml
+data/persona_profile.yaml
+data/emotion_profile.yaml
+data/emotion_boundaries.json
+data/emotion_expression.json
+data/cognitive_profile.json
+data/cognitive_tasks.json
+data/task_results.json
+data/thinking_model.txt
+data/thinking_profile.txt
+data/mediation_digest.json
+data/memories.json
+data/sessions/
+data/advisor_sessions/
+data/personas/
+data/guidance/
+data/.training_status.json
+
+# vendor 运行时产物
+vendor/wechat-decrypt/all_keys.json
+vendor/wechat-decrypt/config.json
+vendor/wechat-decrypt/find_all_keys_macos
+vendor/wechat-decrypt/key_hook.dylib
+vendor/wechat-decrypt/decrypted/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 系统
+.DS_Store
+Thumbs.db

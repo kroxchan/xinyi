@@ -1,0 +1,42 @@
+# API 配置 (密钥从 .env 文件读取)
+api:
+  provider: "openai"
+  api_key: "${WECHAT_TWIN_API_KEY}"
+  model: "${WECHAT_TWIN_MODEL:gpt-5.4}"
+  extraction_model: "${WECHAT_TWIN_MODEL:gpt-5.4}"
+  base_url: "${WECHAT_TWIN_BASE_URL}"
+  headers:
+    User-Agent: "Mozilla/5.0 (X11; Linux x86_64) OpenClaw/2026.2.14"
+    Accept: "application/json"
+
+# 嵌入模型配置
+embedding:
+  model: "shibing624/text2vec-base-chinese"
+  device: "cpu"
+
+# 数据路径
+paths:
+  raw_db_dir: "data/raw"
+  processed_dir: "data/processed"
+  chroma_dir: "data/chroma_db"
+  beliefs_file: "data/beliefs.json"
+  persona_file: "data/persona_profile.yaml"
+  emotion_file: "data/emotion_profile.yaml"
+  thinking_model_file: "data/thinking_model.txt"
+  task_results_file: "data/task_results.json"
+  cognitive_tasks_file: "data/cognitive_tasks.json"
+
+# 对话分段
+chunking:
+  max_turns: 15
+  min_turns: 3
+  time_gap_minutes: 30
+
+# 检索
+retrieval:
+  top_k_vectors: 5
+  top_k_beliefs: 3
+
+# 冷启动自述
+cold_start_description: |
+  待填写：在这里写一段关于你自己的描述。
