@@ -22,7 +22,17 @@ class WeChatDBParser:
         d = self.db_dir
 
         nested_contact = d / "contact" / "contact.db"
-        nested_messages = sorted(d.glob("message/message_*.db"))
+        if not nested_contact.exists():
+            alt = d / "Contact" / "contact.db"
+            if alt.exists():
+                nested_contact = alt
+
+        nested_messages: list[Path] = []
+        for sub in ("message", "Message"):
+            cand = sorted((d / sub).glob("message_*.db"))
+            if cand:
+                nested_messages = cand
+                break
 
         if nested_contact.exists() or nested_messages:
             self.contact_db = nested_contact

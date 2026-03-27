@@ -2549,12 +2549,34 @@ def build_contact_registry_callback():
         if contact_registry is None:
             from src.data.contact_registry import ContactRegistry
             contact_registry = ContactRegistry()
-        messages = components["parser"].get_all_text_messages()
-        contacts_db = components["parser"].get_contacts()
+        raw_dir = str(Path(components["config"]["paths"].get("raw_db_dir", "data/raw")).resolve())
+        components["parser"].set_db_dir(raw_dir)
+        parser = components["parser"]
+        messages = parser.get_all_text_messages()
+        used_fallback = False
+        if not messages:
+            messages = parser.get_messages()
+            used_fallback = True
+        contacts_db = parser.get_contacts()
         contact_registry.build_from_messages(messages, contacts_db)
         table_data, dropdown_choices = _build_contact_table_and_dropdown()
-        msg = '<div class="step-card step-ok">扫描完成，共 {} 个联系人（🤖=AI判断 ✋=手动设置）</div>'.format(
-            contact_registry.count()
+        n_msg_dbs = len(getattr(parser, "message_dbs", []) or [])
+        if contact_registry.count() == 0:
+            hint = (
+                "未读到任何会话记录。请确认：①「连接」里解密已成功；② 数据目录 <code>{}</code> 下存在 "
+                "<code>message/message_*.db</code>；③ 若曾修改过 <code>paths.raw_db_dir</code>，路径需与解密输出一致。"
+                "<br>当前检测到消息库文件数：<b>{}</b>。"
+            ).format(raw_dir, n_msg_dbs)
+            return (
+                '<div class="step-card step-fail">扫描完成，共 0 个联系人。<br><small>{}</small></div>'.format(hint),
+                [],
+                gr.update(choices=[("（无联系人数据）", "")]),
+            )
+        extra = ""
+        if used_fallback:
+            extra = "<br><small>提示：纯文本消息列为空，已用全部消息类型统计联系人（选对象后训练仍以文本为主）。</small>"
+        msg = '<div class="step-card step-ok">扫描完成，共 {} 个联系人（🤖=AI判断 ✋=手动设置）{}</div>'.format(
+            contact_registry.count(), extra,
         )
         return msg, table_data, gr.update(choices=dropdown_choices)
     except Exception as e:
