@@ -37,8 +37,10 @@ import gradio as gr
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = Path("config.yaml")
-CONFIG_EXAMPLE = Path("config.example.yaml")
+# Paths resolved relative to this source file — not cwd
+_APP_DIR = Path(__file__).resolve().parent.parent
+CONFIG_PATH = _APP_DIR / "config.yaml"
+CONFIG_EXAMPLE = _APP_DIR / "config.example.yaml"
 
 # ---------------------------------------------------------------------------
 # Initialization (lazy — no heavy model loading at import time)
@@ -350,7 +352,8 @@ def _resolve_env_vars(obj):
 
 def load_config() -> dict:
     from dotenv import load_dotenv
-    load_dotenv()
+    # Load .env from the app directory so this works regardless of cwd
+    load_dotenv(dotenv_path=str(_APP_DIR / ".env"), override=False)
 
     if not CONFIG_PATH.exists():
         if CONFIG_EXAMPLE.exists():
