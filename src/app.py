@@ -697,24 +697,73 @@ footer { display: none !important; }
     background: #f7f0ee;
     border-right: 1px solid #e6dcd8;
     border-radius: 0;
-    padding: 8px 0 !important;
+    padding: 4px 0 !important;
+    max-width: 160px !important;
+    min-width: 160px !important;
 }
 @media (prefers-color-scheme: dark) {
     #sidebar-col { background: #1a1617; border-right-color: #3a3234; }
 }
 
-.session-item {
-    padding: 10px 14px;
-    margin: 2px 8px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: .88em;
-    line-height: 1.4;
-    transition: background .15s;
+#new-chat-btn {
+    margin: 4px 6px 6px !important;
+    font-size: .82em !important;
+    padding: 6px 0 !important;
 }
-.session-item:hover { background: rgba(176,124,132,.06); }
-.session-item .session-title { font-weight: 500; color: #3d2c30; }
-.session-item .session-meta { font-size: .75em; opacity: .45; margin-top: 2px; }
+
+#session-radio {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    overflow-y: auto;
+    max-height: calc(100vh - 120px);
+}
+#session-radio .wrap {
+    gap: 1px !important;
+}
+#session-radio label {
+    display: flex !important;
+    align-items: center !important;
+    padding: 8px 10px !important;
+    margin: 0 4px !important;
+    border-radius: 6px !important;
+    font-size: .8em !important;
+    cursor: pointer !important;
+    transition: background .12s !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    color: #6b5a5e !important;
+    border: none !important;
+    background: transparent !important;
+    min-height: 0 !important;
+    line-height: 1.3 !important;
+}
+#session-radio label:hover {
+    background: rgba(176,124,132,.08) !important;
+}
+#session-radio label.selected,
+#session-radio input:checked + span {
+    background: rgba(176,124,132,.14) !important;
+    color: #2a1f22 !important;
+    font-weight: 550 !important;
+}
+#session-radio input[type="radio"] {
+    display: none !important;
+}
+@media (prefers-color-scheme: dark) {
+    #session-radio label { color: #a8969a !important; }
+    #session-radio label:hover { background: rgba(255,255,255,.06) !important; }
+    #session-radio label.selected { background: rgba(212,160,168,.15) !important; color: #f0e8e4 !important; }
+}
+
+#del-session-btn {
+    margin: 4px 6px !important;
+    font-size: .72em !important;
+    opacity: .5;
+    padding: 4px 0 !important;
+}
+#del-session-btn:hover { opacity: .8; }
 
 /* ================================================================
    Chat area
@@ -3067,15 +3116,13 @@ def build_ui() -> gr.Blocks:
                 )
 
                 with gr.Row():
-                    with gr.Column(scale=1, min_width=220, elem_id="sidebar-col"):
+                    with gr.Column(scale=0, min_width=160, elem_id="sidebar-col"):
                         adv_new_btn = gr.Button("＋ 新对话", variant="primary", size="sm", elem_id="new-chat-btn")
-                        adv_session_list = gr.HTML(
-                            value="<p style='opacity:.5;text-align:center'>暂无历史</p>"
+                        adv_session_radio = gr.Radio(
+                            choices=[], label=None, show_label=False,
+                            elem_id="session-radio", interactive=True,
                         )
-                        adv_session_dropdown = gr.Dropdown(
-                            label="切换会话", choices=[], visible=False,
-                        )
-                        adv_del_btn = gr.Button("删除当前会话", variant="stop", size="sm")
+                        adv_del_btn = gr.Button("删除当前对话", variant="secondary", size="sm", elem_id="del-session-btn")
 
                     with gr.Column(scale=3, elem_id="chat-area"):
                         chatbot = gr.Chatbot(
@@ -3100,23 +3147,15 @@ def build_ui() -> gr.Blocks:
                             '「@KK 我们最近老吵架怎么办」</span></div>'
                         )
 
-                def _adv_refresh_list():
+                def _adv_refresh_radio(selected_id=None):
                     sessions = _adv_mgr.list_sessions()
                     if not sessions:
-                        html = "<p style='opacity:.5;text-align:center'>暂无历史</p>"
-                        return html, gr.update(choices=[], visible=False)
-                    html = "<div style='font-size:.9em'>"
+                        return gr.update(choices=[], value=None)
+                    choices = []
                     for s in sessions[:15]:
-                        title = s["title"] or "新对话"
-                        cnt = s["message_count"]
-                        html += (
-                            f"<div class='session-item'>"
-                            f"<div class='session-title'>{title}</div>"
-                            f"<div class='session-meta'>{cnt}条对话</div></div>"
-                        )
-                    html += "</div>"
-                    choices = [(s["title"] or "新对话", s["id"]) for s in sessions[:15]]
-                    return html, gr.update(choices=choices, visible=True)
+                        title = (s["title"] or "新对话")[:14]
+                        choices.append((title, s["id"]))
+                    return gr.update(choices=choices, value=selected_id)
 
                 def _adv_session_to_chatbot(session):
                     if session is None:
@@ -3133,8 +3172,8 @@ def build_ui() -> gr.Blocks:
 
                 def _adv_new_session():
                     s = _adv_mgr.create()
-                    list_html, dd = _adv_refresh_list()
-                    return s.id, [], list_html, dd
+                    radio = _adv_refresh_radio(s.id)
+                    return s.id, [], radio
 
                 def _adv_switch_session(choice):
                     if not choice:
@@ -3146,7 +3185,7 @@ def build_ui() -> gr.Blocks:
 
                 def _adv_send(user_msg, session_id, chatbot_history):
                     if not user_msg or not user_msg.strip():
-                        return "", chatbot_history, session_id, gr.update(), gr.update()
+                        return "", chatbot_history, session_id, gr.update()
 
                     is_xiaoan = "@KK" in user_msg
 
@@ -3165,7 +3204,7 @@ def build_ui() -> gr.Blocks:
                             chatbot_history = chatbot_history or []
                             chatbot_history.append({"role": "assistant",
                                                     "content": "💜 **KK**：系统未初始化，请先完成学习。"})
-                            return "", chatbot_history, session_id, gr.update(), gr.update()
+                            return "", chatbot_history, session_id, gr.update()
 
                         clean_msg = user_msg.replace("@KK", "").strip() or user_msg.strip()
                         s.add_message("user", user_msg.strip())
@@ -3209,63 +3248,47 @@ def build_ui() -> gr.Blocks:
                             chatbot_history = chatbot_history or []
                             chatbot_history.append({"role": "assistant",
                                                     "content": "系统未初始化，请先完成训练。"})
-                            return "", chatbot_history, session_id, gr.update(), gr.update()
+                            return "", chatbot_history, session_id, gr.update()
                         advisor.chat(user_msg.strip(), s)
 
                     s.auto_title()
                     _adv_mgr.save(s)
-                    list_html, dd = _adv_refresh_list()
-                    return "", _adv_session_to_chatbot(s), session_id, list_html, dd
+                    radio = _adv_refresh_radio(session_id)
+                    return "", _adv_session_to_chatbot(s), session_id, radio
 
                 def _adv_delete(session_id):
                     if session_id:
                         _adv_mgr.delete(session_id)
-                    sessions = _adv_mgr.list_sessions()
-                    if not sessions:
-                        html = "<p style='opacity:.5;text-align:center'>暂无历史</p>"
-                        dd = gr.update(choices=[], value=None, visible=False)
-                    else:
-                        html = "<div style='font-size:.9em'>"
-                        for s in sessions[:15]:
-                            title = s["title"] or "新对话"
-                            cnt = s["message_count"]
-                            html += (
-                                f"<div class='session-item'>"
-                                f"<div class='session-title'>{title}</div>"
-                                f"<div class='session-meta'>{cnt}条对话</div></div>"
-                            )
-                        html += "</div>"
-                        choices = [(s["title"] or "新对话", s["id"]) for s in sessions[:15]]
-                        dd = gr.update(choices=choices, value=None, visible=True)
-                    return None, [], html, dd
+                    radio = _adv_refresh_radio()
+                    return None, [], radio
 
                 adv_new_btn.click(
                     fn=_adv_new_session,
-                    outputs=[_adv_state, chatbot, adv_session_list, adv_session_dropdown],
+                    outputs=[_adv_state, chatbot, adv_session_radio],
                 )
                 send_btn.click(
                     fn=_adv_send,
                     inputs=[msg_input, _adv_state, chatbot],
-                    outputs=[msg_input, chatbot, _adv_state, adv_session_list, adv_session_dropdown],
+                    outputs=[msg_input, chatbot, _adv_state, adv_session_radio],
                 )
                 msg_input.submit(
                     fn=_adv_send,
                     inputs=[msg_input, _adv_state, chatbot],
-                    outputs=[msg_input, chatbot, _adv_state, adv_session_list, adv_session_dropdown],
+                    outputs=[msg_input, chatbot, _adv_state, adv_session_radio],
                 )
-                adv_session_dropdown.change(
+                adv_session_radio.change(
                     fn=_adv_switch_session,
-                    inputs=adv_session_dropdown,
+                    inputs=adv_session_radio,
                     outputs=[_adv_state, chatbot],
                 )
                 adv_del_btn.click(
                     fn=_adv_delete,
                     inputs=_adv_state,
-                    outputs=[_adv_state, chatbot, adv_session_list, adv_session_dropdown],
+                    outputs=[_adv_state, chatbot, adv_session_radio],
                 )
                 demo.load(
-                    fn=lambda: _adv_refresh_list(),
-                    outputs=[adv_session_list, adv_session_dropdown],
+                    fn=lambda: _adv_refresh_radio(),
+                    outputs=[adv_session_radio],
                 )
 
             # ================================================================
