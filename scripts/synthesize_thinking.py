@@ -4,8 +4,29 @@ Reads the 4 per-scenario analyses, sends them to LLM for cross-scenario synthesi
 then condenses into prompt-ready instructions.
 """
 import json
+import os
 from pathlib import Path
+
+import yaml
 from openai import OpenAI
+
+
+def _load_api_config():
+    cfg_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    if cfg_path.exists():
+        with open(cfg_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        api = raw.get("api", {})
+        def _env(v):
+            if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+                inner = v[2:-1]
+                key, _, default = inner.partition(":")
+                return os.environ.get(key, default or "")
+            return v
+        return {k: _env(v) for k, v in api.items() if not isinstance(v, dict)}, {
+            k: v for k, v in (api.get("headers") or {}).items()
+        }
+    return {"api_key": os.environ.get("WECHAT_TWIN_API_KEY", ""), "base_url": None, "model": "gpt-5.4"}, {}
 
 SCENARIOS = ["loving", "conflict", "daily", "vulnerable"]
 ANALYSES = {}
@@ -58,14 +79,13 @@ CONDENSE_PROMPT = """你是 AI 系统提示词专家。下面是一份从 100 �
 原始认知模型：
 {synthesis}"""
 
+_api, _headers = _load_api_config()
 client = OpenAI(
-    api_key="REDACTED",
-    base_url="REDACTED_URL",
-    default_headers={
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) OpenClaw/2026.2.14",
-        "Accept": "application/json",
-    },
+    api_key=_api.get("api_key", ""),
+    base_url=_api.get("base_url") or None,
+    default_headers=_headers or None,
 )
+_model = _api.get("model", "gpt-5.4")
 
 analysis_block = ""
 for s in SCENARIOS:
@@ -75,7 +95,7 @@ prompt = SYNTHESIS_PROMPT.format(analyses=analysis_block)
 print(f"Step 1: Synthesizing {len(SCENARIOS)} scenarios ({len(prompt)} chars)...")
 
 resp = client.chat.completions.create(
-    model="gpt-5.4",
+    model=_model,
     messages=[
         {"role": "system", "content": "你是认知心理学家，专精从行为数据中构建认知模型。你的工作是找到跨情境的一致模式，而不是重复各场景的描述。"},
         {"role": "user", "content": prompt},
@@ -91,7 +111,7 @@ condense_prompt = CONDENSE_PROMPT.format(synthesis=synthesis)
 print(f"Step 2: Condensing into prompt instructions ({len(condense_prompt)} chars)...")
 
 resp2 = client.chat.completions.create(
-    model="gpt-5.4",
+    model=_model,
     messages=[
         {"role": "system", "content": "你是AI提示词工程师。你的任务是把心理学分析转化成可执行的AI行为指令。指令必须具体到'当X时做Y'的程度。"},
         {"role": "user", "content": condense_prompt},
@@ -101,11 +121,11 @@ resp2 = client.chat.completions.create(
 )
 condensed = resp2.choices[0].message.content or ""
 
-out_path = Path("/Users/vivx/cursor/wechat-twin/data/thinking_model.txt")
+out_path = Path(__file__).resolve().parent.parent / "data" / "thinking_model.txt"
 out_path.parent.mkdir(parents=True, exist_ok=True)
 out_path.write_text(condensed, encoding="utf-8")
 print(f"Step 2 done: {len(condensed)} chars -> {out_path}")
 
-synth_path = Path("/Users/vivx/cursor/wechat-twin/data/thinking_profile.txt")
+synth_path = Path(__file__).resolve().parent.parent / "data" / "thinking_profile.txt"
 synth_path.write_text(synthesis, encoding="utf-8")
 print(f"Full synthesis also saved to {synth_path}")

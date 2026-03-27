@@ -7,13 +7,33 @@ Reads /tmp/thinking_batches/<batch_name>.json
 Outputs /tmp/thinking_batches/<batch_name>_analysis.txt
 """
 import json
+import os
 import sys
 from pathlib import Path
+
+import yaml
 from openai import OpenAI
 
 BATCH_NAME = sys.argv[1]
 INPUT = Path(f"/tmp/thinking_batches/{BATCH_NAME}.json")
 OUTPUT = Path(f"/tmp/thinking_batches/{BATCH_NAME}_analysis.txt")
+
+def _load_api_config():
+    cfg_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    if cfg_path.exists():
+        with open(cfg_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        api = raw.get("api", {})
+        def _env(v):
+            if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+                inner = v[2:-1]
+                key, _, default = inner.partition(":")
+                return os.environ.get(key, default or "")
+            return v
+        return {k: _env(v) for k, v in api.items() if not isinstance(v, dict)}, {
+            k: v for k, v in (api.get("headers") or {}).items()
+        }
+    return {"api_key": os.environ.get("WECHAT_TWIN_API_KEY", ""), "base_url": None, "model": "gpt-5.4"}, {}
 
 SCENARIO_LABELS = {
     "loving": "甜蜜、恋爱、撒娇、表达爱意",
@@ -54,14 +74,13 @@ EXTRACT_PROMPT = """你是一个认知心理学家。下面是同一个人（标
 对话记录：
 {conversations}"""
 
+_api, _headers = _load_api_config()
 client = OpenAI(
-    api_key="REDACTED",
-    base_url="REDACTED_URL",
-    default_headers={
-        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) OpenClaw/2026.2.14",
-        "Accept": "application/json",
-    },
+    api_key=_api.get("api_key", ""),
+    base_url=_api.get("base_url") or None,
+    default_headers=_headers or None,
 )
+_model = _api.get("model", "gpt-5.4")
 
 texts = json.loads(INPUT.read_text("utf-8"))
 conv_block = ""
@@ -75,7 +94,7 @@ prompt = EXTRACT_PROMPT.format(
 
 print(f"[{BATCH_NAME}] Sending {len(texts)} conversations to LLM...")
 resp = client.chat.completions.create(
-    model="gpt-5.4",
+    model=_model,
     messages=[
         {"role": "system", "content": "你是认知心理学家，专精从真实对话数据中提取行为模式和认知结构。你的分析必须严格基于数据证据，不能凭空推测。"},
         {"role": "user", "content": prompt},
