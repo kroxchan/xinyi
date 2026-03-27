@@ -2930,6 +2930,24 @@ def build_ui() -> gr.Blocks:
             d = f' <span style="opacity:.6">— {detail}</span>' if detail else ""
             return f'<span style="font-size:.95em">{icon} {label}{d}</span>'
 
+        def _setup1_status_html():
+            st = _detect_pipeline_status()
+            ak2, bu2, md2, pv2 = _load_api_fields()
+            has_api2 = bool(ak2)
+            hd = st.get("has_decrypted", False)
+            return (
+                _step_done_html("API 已配置", has_api2, pv2 + " / " + md2 if has_api2 else "未配置") + "<br>"
+                + _step_done_html("解密工具", st["has_scanner"], "已编译" if st["has_scanner"] else "") + "<br>"
+                + _step_done_html("密钥提取", st["has_keys"], "{} 个密钥".format(st.get("key_count", 0)) if st["has_keys"] else "") + "<br>"
+                + _step_done_html("数据库解密", hd, "{} 个数据库".format(st.get("db_count", 0)) if hd else "")
+            )
+
+        def _step3_decrypt_banner_html():
+            st = _detect_pipeline_status()
+            if st.get("has_decrypted"):
+                return '<span style="color:#65a88a">✓ 数据库已解密（{} 个）。</span>'.format(st.get("db_count", 0))
+            return STEP3_GUIDE_HTML
+
         with gr.Tabs(elem_id="main-tabs") as main_tabs:
 
             # ================================================================
@@ -2939,13 +2957,8 @@ def build_ui() -> gr.Blocks:
 
                 gr.Markdown("### 连接你的 AI 服务")
 
-                # -- status overview --
-                setup1_status = gr.HTML(value=(
-                    _step_done_html("API 已配置", _has_api, _pv + " / " + _md if _has_api else "未配置") + "<br>"
-                    + _step_done_html("解密工具", init_status["has_scanner"], "已编译" if init_status["has_scanner"] else "") + "<br>"
-                    + _step_done_html("密钥提取", init_status["has_keys"], "{} 个密钥".format(init_status.get("key_count", 0)) if init_status["has_keys"] else "") + "<br>"
-                    + _step_done_html("数据库解密", _has_decrypted, "{} 个数据库".format(init_status.get("db_count", 0)) if _has_decrypted else "")
-                ))
+                # -- status overview (refreshed after decrypt via decrypt_timer) --
+                setup1_status = gr.HTML(value=_setup1_status_html())
 
                 # -- API config --
                 gr.Markdown("---\n#### API 配置")
@@ -3009,10 +3022,7 @@ def build_ui() -> gr.Blocks:
                 step2_output = gr.HTML()
 
                 gr.Markdown("---\n#### 解密数据库")
-                if _has_decrypted:
-                    gr.HTML('<span style="color:#65a88a">✓ 数据库已解密（{} 个）。</span>'.format(init_status.get("db_count", 0)))
-                else:
-                    gr.HTML(STEP3_GUIDE_HTML)
+                step3_decrypt_banner = gr.HTML(value=_step3_decrypt_banner_html())
                 gr.HTML(
                     "<div style='font-size:0.82em;opacity:0.88;line-height:1.65;margin:8px 0 0'>"
                     "重新提取密钥或更换数据源后，可随时点「重新解密」覆盖 <code>data/raw</code> 下的解密结果。"
@@ -3050,23 +3060,44 @@ def build_ui() -> gr.Blocks:
                     steps = r.get_steps()
                     active = r.is_running() and not r.done
                     skip = gr.update()
+                    st_up = skip
+                    ban_up = skip
                     if not steps:
-                        return skip, skip, gr.Timer(active=active)
+                        return skip, skip, gr.Timer(active=active), st_up, ban_up
                     html = _step_html(steps)
                     if r.mode == "step1":
-                        return html, skip, gr.Timer(active=active)
-                    elif r.mode == "step3":
-                        return skip, html, gr.Timer(active=active)
-                    return skip, skip, gr.Timer(active=active)
+                        return html, skip, gr.Timer(active=active), st_up, ban_up
+                    if r.mode == "step3":
+                        out3 = html
+                        if r.done:
+                            st_up = _setup1_status_html()
+                            ban_up = _step3_decrypt_banner_html()
+                        return skip, out3, gr.Timer(active=active), st_up, ban_up
+                    return skip, skip, gr.Timer(active=active), st_up, ban_up
 
-                decrypt_timer.tick(fn=_decrypt_poll, outputs=[step1_output, step3_output, decrypt_timer])
+                decrypt_timer.tick(
+                    fn=_decrypt_poll,
+                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner],
+                )
 
                 step1_btn.click(fn=run_step1_prepare, outputs=[step1_output, decrypt_timer])
                 step2_btn.click(fn=run_step2_check_keys, outputs=step2_output)
                 step2_reextract_btn.click(fn=run_step2_reextract_instructions, outputs=step2_output)
                 step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output, decrypt_timer])
-                link_btn.click(fn=link_external_dir, inputs=path_input, outputs=[link_result, scan_info])
-                path_input.submit(fn=link_external_dir, inputs=path_input, outputs=[link_result, scan_info])
+                def _link_external_dir_ui(path_str: str):
+                    h, s = link_external_dir(path_str)
+                    return h, s, _setup1_status_html(), _step3_decrypt_banner_html()
+
+                link_btn.click(
+                    fn=_link_external_dir_ui,
+                    inputs=path_input,
+                    outputs=[link_result, scan_info, setup1_status, step3_decrypt_banner],
+                )
+                path_input.submit(
+                    fn=_link_external_dir_ui,
+                    inputs=path_input,
+                    outputs=[link_result, scan_info, setup1_status, step3_decrypt_banner],
+                )
 
             # ================================================================
             # Setup Tab 2: 联系人与对象
