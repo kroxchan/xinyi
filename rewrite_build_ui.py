@@ -68,13 +68,16 @@ new_build_ui = '''def build_ui() -> gr.Blocks:
 
         def _load_api_fields():
             try:
-                cfg = yaml.safe_load(open(CONFIG_PATH, encoding="utf-8")) or {}
-                api = cfg.get("api", {})
+                resolved = load_config()
+                api = resolved.get("api", {})
+                with open(CONFIG_PATH, encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                api_raw = raw.get("api", {})
                 return (
-                    api.get("api_key", ""),
-                    api.get("base_url", ""),
-                    api.get("model", ""),
-                    api.get("provider", "openai"),
+                    api.get("api_key", "") or api_raw.get("api_key", ""),
+                    str(api.get("base_url") or api_raw.get("base_url") or ""),
+                    api.get("model", "") or api_raw.get("model", ""),
+                    api.get("provider", "openai") or api_raw.get("provider", "openai"),
                 )
             except Exception:
                 return "", "", "", "openai"
@@ -89,7 +92,9 @@ new_build_ui = '''def build_ui() -> gr.Blocks:
             if "api" not in cfg:
                 cfg["api"] = {}
             cfg["api"]["provider"] = (provider or "openai").strip()
-            cfg["api"]["model"] = (model or "").strip()
+            model_stripped = (model or "").strip()
+            cfg["api"]["model"] = model_stripped
+            cfg["api"]["extraction_model"] = model_stripped
             cfg["api"]["api_key"] = (key or "").strip()
             cfg["api"]["base_url"] = (base_url or "").strip() or None
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:

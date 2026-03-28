@@ -2152,14 +2152,22 @@ def build_ui() -> gr.Blocks:
         is_ready = init_status["has_training"]
 
         def _load_api_fields():
+            """从磁盘读配置，但 Model 等字段展示「解析后」的值。
+
+            若 yaml 里是 ``${WECHAT_TWIN_MODEL:gpt-5.4}`` 而 .env 设了 ``WECHAT_TWIN_MODEL=gpt-4o``，
+            这里会显示 ``gpt-4o``（真实生效值），避免界面写 5.4、运行仍是 4o 的错觉。
+            """
             try:
-                cfg = yaml.safe_load(open(CONFIG_PATH, encoding="utf-8")) or {}
-                api = cfg.get("api", {})
+                resolved = load_config()
+                api = resolved.get("api", {})
+                with open(CONFIG_PATH, encoding="utf-8") as f:
+                    raw = yaml.safe_load(f) or {}
+                api_raw = raw.get("api", {})
                 return (
-                    api.get("api_key", ""),
-                    api.get("base_url", ""),
-                    api.get("model", ""),
-                    api.get("provider", "openai"),
+                    api.get("api_key", "") or api_raw.get("api_key", ""),
+                    str(api.get("base_url") or api_raw.get("base_url") or ""),
+                    api.get("model", "") or api_raw.get("model", ""),
+                    api.get("provider", "openai") or api_raw.get("provider", "openai"),
                 )
             except Exception:
                 return "", "", "", "openai"
@@ -2174,7 +2182,10 @@ def build_ui() -> gr.Blocks:
             if "api" not in cfg:
                 cfg["api"] = {}
             cfg["api"]["provider"] = (provider or "openai").strip()
-            cfg["api"]["model"] = (model or "").strip()
+            model_stripped = (model or "").strip()
+            cfg["api"]["model"] = model_stripped
+            # 与 model 同步为纯文本，避免仍保留 ${WECHAT_TWIN_MODEL:...} 时被 .env 覆盖成别的模型
+            cfg["api"]["extraction_model"] = model_stripped
             cfg["api"]["api_key"] = (key or "").strip()
             cfg["api"]["base_url"] = (base_url or "").strip() or None
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -3998,6 +4009,11 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown(
                     "修改后点击「保存 API 配置」会写入 `config.yaml` 并**立即重新加载运行时配置**（一般无需重启）。"
                     "下方「系统状态」会在保存后自动更新。"
+                    "<br><span style=\"font-size:0.9em;opacity:0.85\">"
+                    "提示：若曾在 yaml 里用 <code>${WECHAT_TWIN_MODEL:…}</code>，"
+                    "`.env` 里的 <code>WECHAT_TWIN_MODEL</code> 会覆盖默认值；"
+                    "在界面保存模型时会写入**纯文本**并同步 <code>extraction_model</code>，与 .env 脱钩。"
+                    "</span>"
                 )
                 with gr.Row():
                     sys_api_provider = gr.Dropdown(

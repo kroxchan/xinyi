@@ -1,4 +1,5 @@
 # API 配置 (密钥从 .env 文件读取)
+# 若在 Gradio「设置」里保存模型，会写入纯文本 model + extraction_model，不再受 WECHAT_TWIN_MODEL 覆盖。
 api:
   provider: "openai"
   api_key: "${WECHAT_TWIN_API_KEY}"
