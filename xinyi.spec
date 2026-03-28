@@ -48,6 +48,7 @@ hiddenimports = [
     "src.logging_config",
     "src.engine.chat",
     "src.engine.training",
+    "src.utils.model_download",
     "src.memory.embedder",
     "src.memory.vector_store",
     "src.memory.retriever",
