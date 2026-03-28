@@ -1,0 +1,126 @@
+name: Build Release Packages
+
+on:
+  push:
+    tags:
+      - "v*"          # 推送 v1.0.0 等 tag 时触发
+  workflow_dispatch:    # 也支持手动触发
+
+jobs:
+  # ── macOS .app ───────────────────────────────────────────
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build macOS app
+        run: pyinstaller xinyi.spec --clean
+
+      - name: Package as ZIP
+        run: zip -r xinyi-macos.zip xinyi.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xinyi-macos
+          path: xinyi-macos.zip
+          retention-days: 30
+
+  # ── Windows .exe ────────────────────────────────────────
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build Windows exe
+        run: pyinstaller xinyi-windows.spec --clean
+
+      - name: Package as ZIP
+        shell: powershell
+        run: Compress-Archive -Path dist/xinyi -DestinationPath xinyi-windows.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xinyi-windows
+          path: xinyi-windows.zip
+          retention-days: 30
+
+  # ── Linux ────────────────────────────────────────────────
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build Linux app
+        run: pyinstaller xinyi.spec --clean
+
+      - name: Package as tarball
+        run: tar -czf xinyi-linux.tar.gz xinyi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xinyi-linux
+          path: xinyi-linux.tar.gz
+          retention-days: 30
+
+  # ── Release ──────────────────────────────────────────────
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure
+        run: ls -R artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref }}
+          name: xinyi ${{ github.ref }}
+          generate_release_notes: true
+          draft: false
+          files: |
+            artifacts/xinyi-macos/xinyi-macos.zip
+            artifacts/xinyi-windows/xinyi-windows.zip
+            artifacts/xinyi-linux/xinyi-linux.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

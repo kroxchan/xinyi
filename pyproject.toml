@@ -1,0 +1,56 @@
+[build-system]
+requires = ["briefcase>=0.3.17"]
+build-backend = "briefcase.api.publish"
+
+[project]
+name = "xinyi"
+version = "1.0.0"
+description = "xinyi - 你的 AI 分身"
+long_description = "xinyi 是一个基于微信聊天记录训练的个人 AI 分身，能记住你的说话方式、情绪和信念。"
+license = "MIT"
+requires-python = ">=3.10"
+
+[tool.briefcase]
+project_name = "xinyi"
+bundle = "com.xinyi.app"
+icon = "icons/xinyi"
+app_name = "xinyi"
+organization_name = "xinyi"
+description = "你的 AI 分身"
+long_description = "xinyi - 基于微信聊天记录训练的个人 AI 分身"
+url = "https://github.com/kroxchan/xinyi"
+category = "public.app-category.productivity"
+requires = [
+    "chromadb>=0.5.0",
+    "gradio>=4.0.0",
+    "openai>=1.0.0",
+    "anthropic>=0.30.0",
+    "sentence-transformers>=3.0.0",
+    "pandas>=2.0.0",
+    "jieba>=0.42.1",
+    "pycryptodome>=3.19",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+    "requests>=2.31.0",
+    "torch>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[tool.briefcase.app.xinyi]
+formal_name = "xinyi"
+author = "xinyi"
+email = "xinyi@example.com"
+license = "MIT"
+requires = []
+
+[tool.briefcase.app.xinyi.macos]
+requires = [
+    "tts>=1.0.0",
+]
+
+[tool.briefcase.app.xinyi.windows]
+requires = []
+
+[tool.briefcase.app.xinyi.linux]
+requires = []
