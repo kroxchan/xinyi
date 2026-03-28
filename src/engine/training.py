@@ -643,9 +643,9 @@ class TrainingPipeline:
             _runner.add("⏩ 联系人")
         else:
             try:
+                global _contact_registry
                 if _contact_registry is None:
                     from src.data.contact_registry import ContactRegistry
-                    global _contact_registry
                     _contact_registry = ContactRegistry()
                 contacts_db = components["parser"].get_contacts()
                 _contact_registry.build_from_messages(self._messages, contacts_db)
