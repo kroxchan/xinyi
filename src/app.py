@@ -2203,6 +2203,15 @@ def build_ui() -> gr.Blocks:
                 logger.error("API 保存后重新初始化失败: %s", e)
                 return f'<span style="color:#65a88a">✓ 已保存。</span><span style="color:#f59e0b"> 初始化失败（{e}），请检查配置后刷新页面。</span>'
 
+        def _save_api_and_refresh_system_status(provider, model, key, base_url):
+            """与 _save_api 相同，但额外返回最新系统状态（解决保存后「系统状态」仍显示旧模型的问题）。"""
+            msg = _save_api(provider, model, key, base_url)
+            try:
+                status = get_system_info()
+            except Exception:
+                status = "（系统状态暂时无法读取，请点击「刷新」）"
+            return msg, status
+
         _ak, _bu, _md, _pv = _load_api_fields()
         _has_api = bool(_ak)
         _has_partner = init_status.get("has_partner", False)
@@ -3986,7 +3995,10 @@ def build_ui() -> gr.Blocks:
                 demo.load(fn=get_system_info, outputs=info_output)
 
                 gr.Markdown("---\n### API 配置")
-                gr.Markdown("修改后保存到 `config.yaml`，需重启生效。")
+                gr.Markdown(
+                    "修改后点击「保存 API 配置」会写入 `config.yaml` 并**立即重新加载运行时配置**（一般无需重启）。"
+                    "下方「系统状态」会在保存后自动更新。"
+                )
                 with gr.Row():
                     sys_api_provider = gr.Dropdown(
                         label="Provider", choices=["openai", "anthropic", "gemini"],
@@ -4000,9 +4012,9 @@ def build_ui() -> gr.Blocks:
                 sys_save_api_btn = gr.Button("保存 API 配置", variant="primary")
                 sys_save_api_result = gr.HTML()
                 sys_save_api_btn.click(
-                    fn=_save_api,
+                    fn=_save_api_and_refresh_system_status,
                     inputs=[sys_api_provider, sys_api_model, sys_api_key, sys_api_base],
-                    outputs=sys_save_api_result,
+                    outputs=[sys_save_api_result, info_output],
                 )
 
                 gr.Markdown("---\n### 重置学习数据")
