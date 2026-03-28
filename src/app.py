@@ -1155,6 +1155,12 @@ def _detect_pipeline_status() -> dict:
     from src.data.partner_config import load_partner_wxid
     has_partner = bool(load_partner_wxid().strip())
 
+    # Model cache status
+    from src.utils.model_download import XINYI_MODELS, is_model_cached
+    model_status = {}
+    for m in XINYI_MODELS:
+        model_status[m] = is_model_cached(m)
+
     return {
         "has_repo": has_repo,
         "has_scanner": has_scanner,
@@ -1165,6 +1171,7 @@ def _detect_pipeline_status() -> dict:
         "has_training": has_training,
         "output_dir": output_dir,
         "has_partner": has_partner,
+        "model_status": model_status,
     }
 
 
@@ -2264,6 +2271,83 @@ def build_ui() -> gr.Blocks:
                     )
 
                 # -- decrypt tool + keys --
+                gr.Markdown("---\n#### 下载 AI 模型")
+                gr.HTML(
+                    "<div style='font-size:0.82em;opacity:0.88;line-height:1.6;margin:4px 0 10px'>"
+                    "心译使用本地 AI 模型处理聊天记录，<strong>首次使用需要联网下载（约 1GB）</strong>。"
+                    "下载后无需再次下载。<strong>国内用户会自动切换镜像站下载，无需翻墙。</strong>"
+                    "</div>"
+                )
+
+                # Model status table (refreshed on load)
+                def _model_status_html(ms: dict) -> str:
+                    rows = []
+                    model_labels = {
+                        "BAAI/bge-m3": "向量化模型（必须）",
+                        "jefferyluo/bert-chinese-emotion": "情感分类模型（可选）",
+                        "BAAI/bge-reranker-base": "重排模型（可选）",
+                    }
+                    model_sizes = {
+                        "BAAI/bge-m3": "~400 MB",
+                        "jefferyluo/bert-chinese-emotion": "~300 MB",
+                        "BAAI/bge-reranker-base": "~400 MB",
+                    }
+                    for name, cached in ms.items():
+                        label = model_labels.get(name, name)
+                        size = model_sizes.get(name, "")
+                        icon = '<span style="color:#65a88a">✅ 已下载</span>' if cached \
+                            else '<span style="color:#f59e0b">⬜ 待下载</span>'
+                        rows.append(
+                            f"<tr><td style='padding:4px 12px 4px 0'>{label}</td>"
+                            f"<td style='padding:4px 8px;color:#888;font-size:0.82em'>{size}</td>"
+                            f"<td style='padding:4px 0'>{icon}</td></tr>"
+                        )
+                    table = (
+                        "<table style='border-collapse:collapse;font-size:0.88em;margin-bottom:10px'>"
+                        + "".join(rows)
+                        + "</table>"
+                    )
+                    all_cached = all(ms.values())
+                    if all_cached:
+                        table += '<span style="color:#65a88a">✓ 所有模型已就绪，无需下载。</span>'
+                    return table
+
+                setup_model_status = gr.HTML()
+
+                def _refresh_model_status():
+                    st = _detect_pipeline_status()
+                    return _model_status_html(st.get("model_status", {}))
+
+                setup_model_status.value = _refresh_model_status()
+
+                model_download_btn = gr.Button("下载所有模型", variant="primary")
+                model_download_result = gr.HTML()
+
+                def _download_models_fn():
+                    from src.utils.model_download import download_model_once, XINYI_MODELS
+                    results = {}
+                    for m in XINYI_MODELS:
+                        download_model_once(m)
+                        results[m] = is_model_cached(m)
+                    all_ok = all(results.values())
+                    lines = []
+                    for m, ok in results.items():
+                        icon = "✅" if ok else "❌"
+                        lines.append(f"{icon} {m}")
+                    msg = (
+                        '<span style="color:#65a88a">✅ 模型下载完成！</span><br>'
+                        + "<br>".join(lines)
+                    ) if all_ok else (
+                        '<span style="color:#f59e0b">⚠ 部分模型下载失败，请检查网络后重试。</span><br>'
+                        + "<br>".join(lines)
+                    )
+                    return msg, _model_status_html(results)
+
+                model_download_btn.click(
+                    fn=_download_models_fn,
+                    outputs=[model_download_result, setup_model_status],
+                )
+
                 gr.Markdown("---\n#### 解密工具准备")
                 if init_status["has_scanner"]:
                     gr.HTML('<span style="color:#65a88a">✓ 解密工具已就绪。</span>')
