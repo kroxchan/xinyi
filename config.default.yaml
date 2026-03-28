@@ -1,0 +1,75 @@
+# =============================================================================
+# xinyi 配置文件模板
+# 复制此文件为 config.yaml 即可使用（config.yaml 在 .gitignore 中，不会被提交）
+# =============================================================================
+
+# 环境模式：dev | prod（XINYI_ENV 环境变量优先级最高）
+env: "dev"
+
+# API 配置 (密钥从 .env 文件读取，不要硬编码在这里)
+api:
+  provider: "openai"
+  api_key: "${WECHAT_TWIN_API_KEY}"
+  model: "${WECHAT_TWIN_MODEL:gpt-4o}"
+  extraction_model: "${WECHAT_TWIN_MODEL:gpt-4o}"
+  base_url: "${WECHAT_TWIN_BASE_URL}"
+  headers:
+    User-Agent: "Mozilla/5.0 (X11; Linux x86_64) OpenClaw/2026.2.14"
+    Accept: "application/json"
+
+# 嵌入模型配置
+embedding:
+  model: "shibing624/text2vec-base-chinese"
+  device: "cpu"
+  offline: true          # true=优先离线加载，首次缺失时自动下载；false=始终联网加载
+
+# 数据路径
+paths:
+  raw_db_dir: "data/raw"
+  processed_dir: "data/processed"
+  chroma_dir: "data/chroma_db"
+  beliefs_file: "data/beliefs.json"
+  persona_file: "data/persona_profile.yaml"
+  emotion_file: "data/emotion_profile.yaml"
+  thinking_model_file: "data/thinking_model.txt"
+  task_results_file: "data/task_results.json"
+  cognitive_tasks_file: "data/cognitive_tasks.json"
+
+# 对话分段
+chunking:
+  max_turns: 15
+  min_turns: 3
+  time_gap_minutes: 30
+
+# 检索
+retrieval:
+  top_k_vectors: 5
+  top_k_beliefs: 3
+
+# Rerank 配置（方案 A：本地 bge-reranker-base；方案 C：Cohere API）
+rerank:
+  enabled: true                # 设为 false 可关闭重排，回退到纯向量检索
+  provider: "local"            # "local" | "cohere"
+  model: "BAAI/bge-reranker-base"
+  cohere_api_key: "${COHERE_API_KEY:}"
+  device: "cpu"
+  top_k_raw: 20               # 粗召回数量（重排前）
+  top_k_reranked: 5           # 重排后精筛数量
+
+# 情感感知配置（P2-6：训练时给每个 chunk 打情感标签，检索时优先召回情绪相近的 chunk）
+emotion:
+  enabled: false               # 设为 true 启用情感标签（需先运行 scripts/init_models.sh 下载模型）
+  provider: "local"           # "local"（BERT模型）| "llm"（LLM推理）
+  model: "jefferyluo/bert-chinese-emotion"
+  emotion_boost_weight: 1.5   # 情绪匹配加权系数（>1 优先召回同情绪 chunk）
+
+# 日志配置
+logging:
+  level: "INFO"               # DEBUG | INFO | WARNING | ERROR（dev 模式下自动升级为 DEBUG）
+  dir: "logs"
+  rotation: "100 MB"
+  retention: "30 days"
+
+# 冷启动自述
+cold_start_description: |
+  待填写：在这里写一段关于你自己的描述。

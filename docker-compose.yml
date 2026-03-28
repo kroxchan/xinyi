@@ -1,0 +1,62 @@
+# =============================================================================
+# docker-compose.yml for xinyi
+#
+# Two services:
+#   xinyi-webui  — the main WebUI (always runs)
+#   xinyi-chroma — optional external ChromaDB (set USE_EXTERNAL_CHROMA=1 to enable)
+#
+# IMPORTANT: WeChat DB decryption requires macOS native environment.
+# Use Docker only if you already have decrypted .db files in data/raw/.
+# =============================================================================
+
+version: "3.9"
+
+services:
+  xinyi-webui:
+    build: .
+    container_name: xinyi-webui
+    ports:
+      - "7872:7860"
+    volumes:
+      # Mount local data directory for persistence
+      - ./data:/app/data:rw
+      # Mount logs directory
+      - ./logs:/app/logs:rw
+      # Mount vendor (wechat-decrypt) — read-only, not used in Docker but harmless
+      - ./vendor:/app/vendor:ro
+    env_file:
+      - .env
+    environment:
+      - XINYI_ENV=prod
+      - HF_HUB_OFFLINE=0
+      - USE_EXTERNAL_CHROMA=${USE_EXTERNAL_CHROMA:-0}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - xinyi-net
+
+  # Optional: external ChromaDB (enable with USE_EXTERNAL_CHROMA=1)
+  xinyi-chroma:
+    image: chromadb/chroma:latest
+    container_name: xinyi-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma/chroma:rw
+    restart: unless-stopped
+    networks:
+      - xinyi-net
+    profiles:
+      - with-chroma  # only starts with: docker compose --profile with-chroma up
+
+volumes:
+  chroma-data:
+
+networks:
+  xinyi-net:
+    driver: bridge

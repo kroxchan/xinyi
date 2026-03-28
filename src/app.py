@@ -703,20 +703,20 @@ footer { display: none !important; }
 /* ================================================================
    Chat sidebar (session list)
    ================================================================ */
+/* 宽度由 #sidebar-col.chat-sidebar-wrap（心译对话）内联样式控制；勿在此用 !important 压窄 */
 #sidebar-col {
     background: #f7f0ee;
     border-right: 1px solid #e6dcd8;
     border-radius: 0;
     padding: 4px 0 !important;
-    max-width: 160px !important;
-    min-width: 160px !important;
 }
 @media (prefers-color-scheme: dark) {
     #sidebar-col { background: #1a1617; border-right-color: #3a3234; }
 }
 
+/* 心译边栏内由 #sidebar-col.chat-sidebar-wrap 内联样式控制；左右 margin 会与 width:100% 叠加溢出 */
 #new-chat-btn {
-    margin: 4px 6px 6px !important;
+    margin: 4px 0 6px !important;
     font-size: .82em !important;
     padding: 6px 0 !important;
 }
@@ -2906,6 +2906,8 @@ def build_ui() -> gr.Blocks:
             try:
                 _cfg = load_config()
                 components = init_components(_cfg)
+                from src.engine.advisor_registry import get_registry as _gr
+                _gr().reload()
                 from src.engine.session import SessionManager
                 session_mgr = SessionManager(directory="data/sessions")
                 from src.engine.persona import PersonaManager
@@ -3221,6 +3223,7 @@ def build_ui() -> gr.Blocks:
                     AdvisorSession,
                     AdvisorSessionManager,
                 )
+                from src.engine.advisor_registry import get_registry as _get_registry
                 from src.mediation.mediator import ConflictMediator
 
                 _adv_mgr = AdvisorSessionManager()
@@ -3265,17 +3268,12 @@ def build_ui() -> gr.Blocks:
                         thinking_model=thinking_model,
                     )
 
-                _advisor_inst = [_init_advisor() if is_ready else None]
-
-                def _get_advisor():
-                    if _advisor_inst[0] is None:
-                        _advisor_inst[0] = _init_advisor()
-                    return _advisor_inst[0]
-
-                _mediator_inst = [None]
+                # 注册到全局 registry，支持热重载
+                _reg = _get_registry()
+                _reg.register_advisor(_init_advisor)
 
                 def _init_mediator():
-                    adv = _get_advisor()
+                    adv = _reg.get_advisor()
                     if adv is None:
                         return None
                     return ConflictMediator(
@@ -3292,10 +3290,13 @@ def build_ui() -> gr.Blocks:
                         thinking_model=adv.thinking_model,
                     )
 
+                _reg.register_mediator(_init_mediator)
+
+                def _get_advisor():
+                    return _reg.get_advisor()
+
                 def _get_mediator():
-                    if _mediator_inst[0] is None:
-                        _mediator_inst[0] = _init_mediator()
-                    return _mediator_inst[0]
+                    return _reg.get_mediator()
 
                 from src.data.partner_config import load_twin_mode as _ltm_chat
                 _chat_tw = _ltm_chat()
@@ -3310,16 +3311,165 @@ def build_ui() -> gr.Blocks:
                     f'</div>'
                 )
 
-                with gr.Row():
-                    with gr.Column(scale=0, min_width=160, elem_id="sidebar-col"):
-                        adv_new_btn = gr.Button("＋ 新对话", variant="primary", size="sm", elem_id="new-chat-btn")
-                        adv_session_radio = gr.Radio(
-                            choices=[], label=None, show_label=False,
-                            elem_id="session-radio", interactive=True,
-                        )
-                        adv_del_btn = gr.Button("删除当前对话", variant="secondary", size="sm", elem_id="del-session-btn")
+                _CHAT_MAX_SESSION_SLOTS = 12
 
-                    with gr.Column(scale=3, elem_id="chat-area"):
+                gr.HTML(
+                    """
+<style>
+#sidebar-col.chat-sidebar-wrap {
+  background: #f5f5f2;
+  border-radius: 12px;
+  padding: 10px 10px 12px 10px;
+  border: 1px solid #e6e6e1;
+  min-width: 260px !important;
+  max-width: 320px !important;
+  width: 280px !important;
+  flex: 0 0 280px !important;
+  box-sizing: border-box !important;
+  overflow-x: hidden !important;
+}
+#sidebar-col.chat-sidebar-wrap > .form {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+#sidebar-col .recents-label {
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #8a8580;
+  margin: 4px 4px 8px 6px;
+  font-weight: 600;
+}
+/* 强制一行：Gradio 会把每个子组件包在 column 里，需对子级 flex */
+#sidebar-col .session-row-wrap {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  align-items: stretch !important;
+  gap: 4px !important;
+  margin-bottom: 2px !important;
+  width: 100% !important;
+}
+#sidebar-col .session-row-wrap > div {
+  display: flex !important;
+  flex-flow: row nowrap !important;
+  align-items: stretch !important;
+  min-width: 0 !important;
+}
+#sidebar-col .session-row-wrap > div:first-of-type {
+  flex: 1 1 0% !important;
+  min-width: 0 !important;
+  max-width: calc(100% - 44px) !important;
+}
+#sidebar-col .session-row-wrap > div:last-of-type {
+  flex: 0 0 40px !important;
+  width: 40px !important;
+  max-width: 40px !important;
+  min-width: 40px !important;
+}
+#sidebar-col .session-row-wrap button.session-title-btn {
+  font-size: 13px !important;
+  line-height: 1.35 !important;
+  min-height: 36px !important;
+  max-height: 40px !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  justify-content: flex-start !important;
+  text-align: left !important;
+  padding: 6px 8px !important;
+  border-radius: 8px !important;
+  border: none !important;
+  box-shadow: none !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+#sidebar-col .session-row-wrap button.session-title-btn.secondary {
+  background: transparent !important;
+  color: #2d2a26 !important;
+}
+#sidebar-col .session-row-wrap button.session-title-btn.primary {
+  background: #ebe8e3 !important;
+  color: #1a1816 !important;
+  font-weight: 600 !important;
+}
+#sidebar-col .session-row-wrap button.session-del-btn {
+  min-width: 36px !important;
+  width: 100% !important;
+  max-width: 40px !important;
+  font-size: 15px !important;
+  opacity: 0.45;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  flex-shrink: 0 !important;
+  padding: 6px 4px !important;
+}
+#sidebar-col .session-row-wrap button.session-del-btn:hover {
+  opacity: 1;
+  background: #ebeae6 !important;
+}
+#sidebar-col.chat-sidebar-wrap #new-chat-btn {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  font-size: 13px !important;
+  padding: 0 !important;
+  border-radius: 10px !important;
+  margin: 0 0 6px 0 !important;
+}
+#sidebar-col.chat-sidebar-wrap #new-chat-btn button {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  padding: 10px 12px !important;
+  border-radius: 10px !important;
+}
+#chat-area.main-chat-panel {
+  background: #fafaf8;
+  border-radius: 12px;
+  padding: 8px 8px 4px 8px;
+  border: 1px solid #eceae6;
+}
+</style>
+"""
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=0, elem_id="sidebar-col", elem_classes=["chat-sidebar-wrap"]):
+                        adv_new_btn = gr.Button(
+                            "＋ 新对话", variant="primary", size="sm", elem_id="new-chat-btn"
+                        )
+                        gr.HTML('<div class="recents-label">最近对话</div>')
+                        _slot_title_btns = []
+                        _slot_del_btns = []
+                        for _slot_i in range(_CHAT_MAX_SESSION_SLOTS):
+                            with gr.Row(elem_classes=["session-row-wrap"]):
+                                _tb = gr.Button(
+                                    "",
+                                    visible=False,
+                                    size="sm",
+                                    elem_classes=["session-title-btn"],
+                                    scale=5,
+                                )
+                                _db = gr.Button(
+                                    "🗑",
+                                    visible=False,
+                                    size="sm",
+                                    elem_classes=["session-del-btn"],
+                                    scale=0,
+                                    min_width=40,
+                                )
+                                _slot_title_btns.append(_tb)
+                                _slot_del_btns.append(_db)
+                        _slot_outputs = []
+                        for _i in range(_CHAT_MAX_SESSION_SLOTS):
+                            _slot_outputs.append(_slot_title_btns[_i])
+                            _slot_outputs.append(_slot_del_btns[_i])
+
+                    with gr.Column(scale=3, elem_id="chat-area", elem_classes=["main-chat-panel"]):
                         chatbot = gr.Chatbot(
                             height=520,
                             type="messages",
@@ -3342,16 +3492,28 @@ def build_ui() -> gr.Blocks:
                             '「@KK 我们最近老吵架怎么办」</span></div>'
                         )
 
-                def _adv_refresh_radio(selected_id=None):
-                    sessions = _adv_mgr.list_sessions()
-                    if not sessions:
-                        return gr.update(choices=[], value=None)
-                    choices = []
-                    for s in sessions[:15]:
-                        raw = s["title"] or "新对话"
-                        title = raw[:13] + "…" if len(raw) > 14 else raw
-                        choices.append((title, s["id"]))
-                    return gr.update(choices=choices, value=selected_id)
+                def _adv_refresh_all(selected_id=None):
+                    """刷新侧栏 12 条会话槽：标题按钮 + 行内删除，当前选中高亮。"""
+                    sessions = _adv_mgr.list_sessions()[:_CHAT_MAX_SESSION_SLOTS]
+                    out = []
+                    for i in range(_CHAT_MAX_SESSION_SLOTS):
+                        if i < len(sessions):
+                            raw = sessions[i]["title"] or "新对话"
+                            title = raw[:26] + "…" if len(raw) > 27 else raw
+                            sid = sessions[i]["id"]
+                            is_sel = selected_id and sid == selected_id
+                            out.append(
+                                gr.update(
+                                    value=title,
+                                    visible=True,
+                                    variant="primary" if is_sel else "secondary",
+                                )
+                            )
+                            out.append(gr.update(visible=True))
+                        else:
+                            out.append(gr.update(visible=False, value=""))
+                            out.append(gr.update(visible=False))
+                    return tuple(out)
 
                 def _adv_session_to_chatbot(session):
                     if session is None:
@@ -3368,20 +3530,39 @@ def build_ui() -> gr.Blocks:
 
                 def _adv_new_session():
                     s = _adv_mgr.create()
-                    radio = _adv_refresh_radio(s.id)
-                    return s.id, [], radio
+                    return (s.id, [],) + _adv_refresh_all(s.id)
 
-                def _adv_switch_session(choice):
-                    if not choice:
-                        return gr.update(), []
-                    s = _adv_mgr.load(choice)
-                    if s is None:
-                        return gr.update(), []
-                    return s.id, _adv_session_to_chatbot(s)
+                def _adv_open_slot(slot_index: int):
+                    def _fn():
+                        sessions = _adv_mgr.list_sessions()[:_CHAT_MAX_SESSION_SLOTS]
+                        if slot_index >= len(sessions):
+                            return (None, [],) + _adv_refresh_all(None)
+                        sid = sessions[slot_index]["id"]
+                        s = _adv_mgr.load(sid)
+                        if s is None:
+                            return (None, [],) + _adv_refresh_all(None)
+                        return (sid, _adv_session_to_chatbot(s)) + _adv_refresh_all(sid)
+                    return _fn
+
+                def _adv_del_slot(slot_index: int):
+                    def _fn(current_sid):
+                        sessions = _adv_mgr.list_sessions()[:_CHAT_MAX_SESSION_SLOTS]
+                        if slot_index >= len(sessions):
+                            s = _adv_mgr.load(current_sid) if current_sid else None
+                            chat = _adv_session_to_chatbot(s) if s else []
+                            return (current_sid, chat,) + _adv_refresh_all(current_sid)
+                        sid = sessions[slot_index]["id"]
+                        _adv_mgr.delete(sid)
+                        if current_sid == sid:
+                            return (None, [],) + _adv_refresh_all(None)
+                        s = _adv_mgr.load(current_sid) if current_sid else None
+                        chat = _adv_session_to_chatbot(s) if s else []
+                        return (current_sid, chat,) + _adv_refresh_all(current_sid)
+                    return _fn
 
                 def _adv_send(user_msg, session_id, chatbot_history):
                     if not user_msg or not user_msg.strip():
-                        return "", chatbot_history, session_id, gr.update()
+                        return ("", chatbot_history, session_id) + _adv_refresh_all(session_id)
 
                     is_xiaoan = "@KK" in user_msg
 
@@ -3400,7 +3581,7 @@ def build_ui() -> gr.Blocks:
                             chatbot_history = chatbot_history or []
                             chatbot_history.append({"role": "assistant",
                                                     "content": "💜 **KK**：系统未初始化，请先完成学习。"})
-                            return "", chatbot_history, session_id, gr.update()
+                            return ("", chatbot_history, session_id) + _adv_refresh_all(session_id)
 
                         clean_msg = user_msg.replace("@KK", "").strip() or user_msg.strip()
                         s.add_message("user", user_msg.strip())
@@ -3444,47 +3625,40 @@ def build_ui() -> gr.Blocks:
                             chatbot_history = chatbot_history or []
                             chatbot_history.append({"role": "assistant",
                                                     "content": "系统未初始化，请先完成训练。"})
-                            return "", chatbot_history, session_id, gr.update()
+                            return ("", chatbot_history, session_id) + _adv_refresh_all(session_id)
                         advisor.chat(user_msg.strip(), s)
 
                     s.auto_title()
                     _adv_mgr.save(s)
-                    radio = _adv_refresh_radio(session_id)
-                    return "", _adv_session_to_chatbot(s), session_id, radio
-
-                def _adv_delete(session_id):
-                    if session_id:
-                        _adv_mgr.delete(session_id)
-                    radio = _adv_refresh_radio()
-                    return None, [], radio
+                    return ("", _adv_session_to_chatbot(s), session_id) + _adv_refresh_all(session_id)
 
                 adv_new_btn.click(
                     fn=_adv_new_session,
-                    outputs=[_adv_state, chatbot, adv_session_radio],
+                    outputs=[_adv_state, chatbot] + _slot_outputs,
                 )
                 send_btn.click(
                     fn=_adv_send,
                     inputs=[msg_input, _adv_state, chatbot],
-                    outputs=[msg_input, chatbot, _adv_state, adv_session_radio],
+                    outputs=[msg_input, chatbot, _adv_state] + _slot_outputs,
                 )
                 msg_input.submit(
                     fn=_adv_send,
                     inputs=[msg_input, _adv_state, chatbot],
-                    outputs=[msg_input, chatbot, _adv_state, adv_session_radio],
+                    outputs=[msg_input, chatbot, _adv_state] + _slot_outputs,
                 )
-                adv_session_radio.change(
-                    fn=_adv_switch_session,
-                    inputs=adv_session_radio,
-                    outputs=[_adv_state, chatbot],
-                )
-                adv_del_btn.click(
-                    fn=_adv_delete,
-                    inputs=_adv_state,
-                    outputs=[_adv_state, chatbot, adv_session_radio],
-                )
+                for _si in range(_CHAT_MAX_SESSION_SLOTS):
+                    _slot_title_btns[_si].click(
+                        fn=_adv_open_slot(_si),
+                        outputs=[_adv_state, chatbot] + _slot_outputs,
+                    )
+                    _slot_del_btns[_si].click(
+                        fn=_adv_del_slot(_si),
+                        inputs=[_adv_state],
+                        outputs=[_adv_state, chatbot] + _slot_outputs,
+                    )
                 demo.load(
-                    fn=lambda: _adv_refresh_radio(),
-                    outputs=[adv_session_radio],
+                    fn=lambda: _adv_refresh_all(None),
+                    outputs=_slot_outputs,
                 )
 
             # ================================================================
