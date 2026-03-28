@@ -24,7 +24,21 @@ jobs:
           pip install pytest pytest-cov
 
       - name: Run tests
-        run: pytest tests/ -v --tb=short --cov=src --cov-report=term-missing
+        run: |
+          # First: verify Python can import all src modules (catch import errors early)
+          python -c "
+            import sys; sys.path.insert(0, '.')
+            from src.config import AppConfig
+            from src.exceptions import XinyiBaseError
+            from src.logging_config import setup_logging
+            from src.memory.reranker import build_reranker
+            from src.data.emotion_tagger import build_tagger
+            from src.data.privacy_redactor import PrivacyRedactor
+            from src.engine.advisor_registry import get_registry
+            print('All imports OK')
+          "
+          # Then run pytest (skip coverage to keep CI fast and focused)
+          pytest tests/ -v --tb=short
 
   lint:
     name: flake8
