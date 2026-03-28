@@ -110,7 +110,7 @@ exe = EXE(
     icon=None,
     manifest=None,
     version=None,
-    resources=None,
+    resources=[],
 )
 
 coll = COLLECT(
