@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from src.logging_config import get_logger
+from src.utils.model_download import download_model_once, is_model_cached
 
 logger = get_logger(__name__)
 
@@ -58,11 +59,6 @@ EMOTION_DISPLAY = {
     "neutral": "中性",
 }
 
-
-def _hf_cache_dir() -> Path:
-    return Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-
-
 class BaseEmotionTagger(ABC):
     """Abstract interface for emotion taggers."""
 
@@ -100,32 +96,10 @@ class LocalEmotionTagger(BaseEmotionTagger):
     # ── model lifecycle ─────────────────────────────────────────────────────
 
     def is_model_cached(self) -> bool:
-        safe_name = self._model_name.replace("/", "--")
-        hf_dir = _hf_cache_dir() / f"models--{safe_name}"
-        if hf_dir.exists() and any(hf_dir.iterdir()):
-            return True
-        st_dir = Path.home() / ".cache" / "torch" / "sentence_transformers" / safe_name
-        return st_dir.exists() and any(st_dir.iterdir())
+        return is_model_cached(self._model_name)
 
     def download_model(self) -> None:
-        prev_hf = os.environ.pop("HF_HUB_OFFLINE", None)
-        prev_tf = os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        try:
-            logger.info("正在下载情感分类模型 %s …", self._model_name)
-            from transformers import AutoModelForSequenceClassification, AutoTokenizer
-            AutoTokenizer.from_pretrained(self._model_name)
-            AutoModelForSequenceClassification.from_pretrained(self._model_name)
-            logger.info("情感分类模型下载完成")
-        finally:
-            if self._offline:
-                if prev_hf is not None:
-                    os.environ["HF_HUB_OFFLINE"] = prev_hf
-                else:
-                    os.environ.pop("HF_HUB_OFFLINE", None)
-                if prev_tf is not None:
-                    os.environ["TRANSFORMERS_OFFLINE"] = prev_tf
-                else:
-                    os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        download_model_once(self._model_name)
 
     def warmup(self) -> None:
         self._ensure_model()

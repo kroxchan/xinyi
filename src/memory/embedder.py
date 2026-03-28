@@ -4,6 +4,8 @@ import logging
 import os
 from pathlib import Path
 
+from src.utils.model_download import download_model_once, is_model_cached
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,31 +32,10 @@ class TextEmbedder:
             os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
     def is_model_cached(self) -> bool:
-        safe_name = self._model_name.replace("/", "--")
-        model_dir = _hf_cache_dir() / f"models--{safe_name}"
-        if model_dir.exists() and any(model_dir.iterdir()):
-            return True
-        st_cache = Path.home() / ".cache" / "torch" / "sentence_transformers" / safe_name
-        return st_cache.exists() and any(st_cache.iterdir())
+        return is_model_cached(self._model_name)
 
     def download_model(self) -> None:
-        prev_hf = os.environ.pop("HF_HUB_OFFLINE", None)
-        prev_tf = os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        try:
-            logger.info("正在下载嵌入模型 %s …", self._model_name)
-            from sentence_transformers import SentenceTransformer
-            SentenceTransformer(self._model_name, device="cpu")
-            logger.info("嵌入模型下载完成")
-        finally:
-            if self._offline:
-                if prev_hf is not None:
-                    os.environ["HF_HUB_OFFLINE"] = prev_hf
-                else:
-                    os.environ["HF_HUB_OFFLINE"] = "1"
-                if prev_tf is not None:
-                    os.environ["TRANSFORMERS_OFFLINE"] = prev_tf
-                else:
-                    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        download_model_once(self._model_name)
 
     def warmup(self) -> None:
         """Pre-load the model so first chat doesn't wait."""

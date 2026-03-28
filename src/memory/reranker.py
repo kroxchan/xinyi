@@ -3,16 +3,11 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from pathlib import Path
 
 from src.logging_config import get_logger
+from src.utils.model_download import download_model_once, is_model_cached
 
 logger = get_logger(__name__)
-
-
-def _hf_cache_dir() -> Path:
-    return Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
-
 
 class BaseReranker(ABC):
     """Abstract reranker interface."""
@@ -60,32 +55,10 @@ class BGEReranker(BaseReranker):
     # ── model lifecycle ─────────────────────────────────────────────────────────
 
     def is_model_cached(self) -> bool:
-        safe_name = self._model_name.replace("/", "--")
-        hf_dir = _hf_cache_dir() / f"models--{safe_name}"
-        if hf_dir.exists() and any(hf_dir.iterdir()):
-            return True
-        st_dir = Path.home() / ".cache" / "torch" / "sentence_transformers" / safe_name
-        return st_dir.exists() and any(st_dir.iterdir())
+        return is_model_cached(self._model_name)
 
     def download_model(self) -> None:
-        prev_hf = os.environ.pop("HF_HUB_OFFLINE", None)
-        prev_tf = os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        try:
-            logger.info("正在下载 rerank 模型 %s …", self._model_name)
-            from sentence_transformers import CrossEncoder
-
-            CrossEncoder(self._model_name, device="cpu")
-            logger.info("rerank 模型下载完成")
-        finally:
-            if self._offline:
-                if prev_hf is not None:
-                    os.environ["HF_HUB_OFFLINE"] = prev_hf
-                else:
-                    os.environ.pop("HF_HUB_OFFLINE", None)
-                if prev_tf is not None:
-                    os.environ["TRANSFORMERS_OFFLINE"] = prev_tf
-                else:
-                    os.environ.pop("TRANSFORMERS_OFFLINE", None)
+        download_model_once(self._model_name)
 
     def warmup(self) -> None:
         self._ensure_model()
