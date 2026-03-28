@@ -349,10 +349,13 @@ class TrainingPipeline:
         if emb.is_model_cached():
             pass  # already reported by caller (Step 6 will log "已就绪")
         else:
+            if runner is not None:
+                runner.update(DS("嵌入模型", True, "正在下载嵌入模型…"))
             try:
                 emb.download_model()
-            except Exception as e:
-                return DS("嵌入模型", False, "下载失败: {}，请检查网络连接".format(e))
+            except Exception:
+                logger.exception("Embedding model download failed")
+                return DS("嵌入模型", False, "嵌入模型下载失败，请检查网络连接")
 
         # Vectorisation
         vec_count = components["vector_store"].count()
@@ -368,8 +371,9 @@ class TrainingPipeline:
                     "向量化存储", True,
                     "向量库共 {:,} 段".format(components["vector_store"].count()),
                 )
-            except Exception as e:
-                return DS("向量化存储", False, "向量化失败: {}".format(e))
+            except Exception:
+                logger.exception("Vector store write failed")
+                return DS("向量化存储", False, "向量化写入失败，请检查存储空间或 chroma 服务状态")
 
     # ------------------------------------------------------------------
     # Step 6 — Run analysis (personality, emotion, cognitive, beliefs)

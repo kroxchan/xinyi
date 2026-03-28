@@ -64,6 +64,10 @@ class ChatEngine:
         self.emotion_tracker: EmotionTracker | None = None
         self.memory_bank: MemoryBank | None = None
 
+        # Session-level degradation flags — cleared each chat turn.
+        # Set to True when the corresponding sub-system times out or errors.
+        self._retrieval_degraded: bool = False
+
     def set_components(
         self,
         memory_retriever: MemoryRetriever,
@@ -89,6 +93,9 @@ class ChatEngine:
     ) -> str:
         if not all([self.memory_retriever, self.belief_graph, self.prompt_builder]):
             return "系统尚未初始化完成，请先导入数据。"
+
+        # Reset degradation flags at the start of each turn.
+        self._retrieval_degraded = False
 
         # --- Stage 1: inner thinking + retrieval in parallel ---
         inner_thought: dict | None = None
@@ -129,7 +136,8 @@ class ChatEngine:
             try:
                 memories, beliefs_text, episodic_text, few_shot = retrieve_future.result(timeout=20)
             except Exception as e:
-                logger.warning("Retrieval timeout/error: %s", e)
+                logger.warning("Retrieval timeout: %s", e)
+                self._retrieval_degraded = True
 
         if inner_thought is None:
             return "⚠ 思考模块API返回异常，请重试"
@@ -167,7 +175,12 @@ class ChatEngine:
             messages.extend(chat_history)
         messages.append({"role": "user", "content": user_message})
 
-        return self._call_llm(messages)
+        reply = self._call_llm(messages)
+
+        if self._retrieval_degraded:
+            reply += "\n\n⚠️ 记忆检索超时，部分对话记忆未能加载，回复可能缺少上下文参考。"
+
+        return reply
 
     def quick_reply(self, message: str) -> str:
         """Stateless single-turn reply for evaluation — no chat history."""
