@@ -25,7 +25,7 @@ HF_OFFICIAL = "https://huggingface.co"
 # Models used by xinyi
 XINYI_MODELS = [
     "BAAI/bge-m3",
-    "jefferyluo/bert-chinese-emotion",
+    "Johnson8187/Chinese-Emotion-Small",
     "BAAI/bge-reranker-base",
 ]
 
@@ -43,9 +43,9 @@ def is_model_cached(model_name: str) -> bool:
     """Check if a HuggingFace model is already in the local cache."""
     safe = model_name.replace("/", "--")
     hf_dir = _hf_cache_dir() / f"models--{safe}"
-    if hf_dir.exists() and any(hf_dir.iterdir()):
+    if _has_required_artifacts(hf_dir):
         return True
-    if _st_cache_dir(model_name).exists() and any(_st_cache_dir(model_name).iterdir()):
+    if _has_required_artifacts(_st_cache_dir(model_name)):
         return True
     return False
 
@@ -119,10 +119,13 @@ def download_model_once(
         saved = os.environ.pop("HF_HUB_OFFLINE", None)
         saved_tf = os.environ.pop("TRANSFORMERS_OFFLINE", None)
         saved_endpoint = os.environ.get("HF_ENDPOINT")
+        saved_base_url = os.environ.get("HUGGINGFACE_HUB_BASE_URL")
         os.environ["HF_ENDPOINT"] = endpoint
+        os.environ["HUGGINGFACE_HUB_BASE_URL"] = endpoint
 
         try:
-            if _load_model(model_name):
+            local_path = _download_snapshot(model_name, endpoint)
+            if _load_model(local_path):
                 logger.info("模型 %s 下载完成（来源: %s）", model_name, endpoint)
                 return True
         except Exception as e:
@@ -136,6 +139,11 @@ def download_model_once(
             )
         finally:
             os.environ.pop("HF_ENDPOINT", None)
+            os.environ.pop("HUGGINGFACE_HUB_BASE_URL", None)
+            if saved_endpoint is not None:
+                os.environ["HF_ENDPOINT"] = saved_endpoint
+            if saved_base_url is not None:
+                os.environ["HUGGINGFACE_HUB_BASE_URL"] = saved_base_url
             if saved is not None:
                 os.environ["HF_HUB_OFFLINE"] = saved
             elif "HF_HUB_OFFLINE" in os.environ:
@@ -169,6 +177,54 @@ def _load_model(model_name: str) -> bool:
         pass
 
     return False
+
+
+def _download_snapshot(model_name: str, endpoint: str) -> str:
+    """Download repo snapshot through a specific endpoint and return local path."""
+    from huggingface_hub import snapshot_download
+
+    return snapshot_download(
+        repo_id=model_name,
+        endpoint=endpoint,
+        resume_download=True,
+    )
+
+
+def resolve_local_model_path(model_name: str) -> str:
+    """Return a strictly local path for a cached model.
+
+    This avoids libraries silently reaching out to huggingface.co during
+    warmup/load even when the model was already downloaded through a mirror.
+    """
+    from huggingface_hub import snapshot_download
+
+    try:
+        return snapshot_download(
+            repo_id=model_name,
+            local_files_only=True,
+        )
+    except Exception:
+        st_dir = _st_cache_dir(model_name)
+        if _has_required_artifacts(st_dir):
+            return str(st_dir)
+        return model_name
+
+
+def _has_required_artifacts(root: Path) -> bool:
+    """Detect whether a cache directory contains a usable model snapshot."""
+    if not root.exists():
+        return False
+    required_names = {
+        "modules.json",
+        "config.json",
+        "tokenizer_config.json",
+        "model.safetensors",
+        "pytorch_model.bin",
+    }
+    try:
+        return any(path.name in required_names for path in root.rglob("*") if path.is_file())
+    except OSError:
+        return False
 
 
 def preload_all_models(verbose: bool = True) -> dict[str, bool]:

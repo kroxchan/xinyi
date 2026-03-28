@@ -16,6 +16,8 @@ class VectorStore:
         persist_dir: str = "data/chroma_db",
         collection_name: str = "conversations",
     ) -> None:
+        self.persist_dir = persist_dir
+        self.collection_name = collection_name
         self.client = chromadb.PersistentClient(path=persist_dir)
         self.collection = self.client.get_or_create_collection(
             name=collection_name,
@@ -40,6 +42,7 @@ class VectorStore:
                     "start_time": c["start_time"],
                     "end_time": c["end_time"],
                     "turn_count": c["turn_count"],
+                    "emotion_tag": c.get("emotion_tag", "neutral"),
                 }
                 for c in batch
             ]
@@ -122,3 +125,23 @@ class VectorStore:
 
     def count(self) -> int:
         return self.collection.count()
+
+    def clear(self) -> None:
+        try:
+            self.client.delete_collection(self.collection_name)
+        except Exception:
+            pass
+        self.collection = self.client.get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+    def has_metadata_key(self, key: str, sample_limit: int = 200) -> bool:
+        if self.count() == 0:
+            return False
+        try:
+            results = self.collection.get(limit=sample_limit, include=["metadatas"])
+            metadatas = results.get("metadatas", []) or []
+            return any(isinstance(meta, dict) and meta.get(key) not in (None, "") for meta in metadatas)
+        except Exception:
+            return False

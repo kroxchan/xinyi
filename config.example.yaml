@@ -39,6 +39,23 @@ retrieval:
   top_k_vectors: 5
   top_k_beliefs: 3
 
+# Rerank 配置
+rerank:
+  enabled: true
+  provider: "local"
+  model: "BAAI/bge-reranker-base"
+  cohere_api_key: "${COHERE_API_KEY:}"
+  device: "cpu"
+  top_k_raw: 20
+  top_k_reranked: 5
+
+# 情感感知配置
+emotion:
+  enabled: true
+  provider: "local"
+  model: "Johnson8187/Chinese-Emotion-Small"
+  emotion_boost_weight: 1.5
+
 # 冷启动自述
 cold_start_description: |
   待填写：在这里写一段关于你自己的描述。

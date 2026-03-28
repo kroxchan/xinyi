@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from src.logging_config import get_logger
-from src.utils.model_download import download_model_once, is_model_cached
+from src.utils.model_download import download_model_once, is_model_cached, resolve_local_model_path
 
 logger = get_logger(__name__)
 
@@ -59,6 +59,51 @@ EMOTION_DISPLAY = {
     "neutral": "中性",
 }
 
+DEFAULT_LOCAL_EMOTION_MODEL = "Johnson8187/Chinese-Emotion-Small"
+LEGACY_LOCAL_EMOTION_MODEL = "jefferyluo/bert-chinese-emotion"
+FALLBACK_LOCAL_EMOTION_MODELS = [
+    DEFAULT_LOCAL_EMOTION_MODEL,
+]
+
+MODEL_LABEL_MAPPINGS: dict[str, dict[int | str, str]] = {
+    "Johnson8187/Chinese-Emotion-Small": {
+        0: "neutral",
+        1: "anxiety",
+        2: "joy",
+        3: "anger",
+        4: "sadness",
+        5: "curiosity",
+        6: "excitement",
+        7: "disappointment",
+        "label_0": "neutral",
+        "label_1": "anxiety",
+        "label_2": "joy",
+        "label_3": "anger",
+        "label_4": "sadness",
+        "label_5": "curiosity",
+        "label_6": "excitement",
+        "label_7": "disappointment",
+    },
+    "Johnson8187/Chinese-Emotion": {
+        0: "neutral",
+        1: "anxiety",
+        2: "joy",
+        3: "anger",
+        4: "sadness",
+        5: "curiosity",
+        6: "excitement",
+        7: "disappointment",
+        "label_0": "neutral",
+        "label_1": "anxiety",
+        "label_2": "joy",
+        "label_3": "anger",
+        "label_4": "sadness",
+        "label_5": "curiosity",
+        "label_6": "excitement",
+        "label_7": "disappointment",
+    },
+}
+
 class BaseEmotionTagger(ABC):
     """Abstract interface for emotion taggers."""
 
@@ -74,7 +119,7 @@ class BaseEmotionTagger(ABC):
 
 
 class LocalEmotionTagger(BaseEmotionTagger):
-    """Local jefferyluo/bert-chinese-emotion, CPU-friendly (~50ms/chunk)."""
+    """Local Chinese emotion classifier with fallback candidates."""
 
     def __init__(
         self,
@@ -84,6 +129,8 @@ class LocalEmotionTagger(BaseEmotionTagger):
         max_batch_size: int = 32,
     ) -> None:
         self._model_name = model_name
+        self._candidate_models = self._build_candidate_models(model_name)
+        self._resolved_model_name = model_name
         self._device = device
         self._offline = offline
         self._max_batch_size = max_batch_size
@@ -95,11 +142,26 @@ class LocalEmotionTagger(BaseEmotionTagger):
 
     # ── model lifecycle ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _build_candidate_models(model_name: str) -> list[str]:
+        ordered: list[str] = []
+        for candidate in [model_name, *FALLBACK_LOCAL_EMOTION_MODELS]:
+            if candidate and candidate not in ordered:
+                ordered.append(candidate)
+        return ordered
+
     def is_model_cached(self) -> bool:
-        return is_model_cached(self._model_name)
+        return any(is_model_cached(model_name) for model_name in self._candidate_models)
 
     def download_model(self) -> None:
-        download_model_once(self._model_name)
+        last_failure = None
+        for model_name in self._candidate_models:
+            logger.info("检查情感分类模型候选: %s", model_name)
+            if download_model_once(model_name):
+                self._resolved_model_name = model_name
+                return
+            last_failure = model_name
+        raise RuntimeError("情感模型下载失败，所有候选均不可用: {}".format(last_failure))
 
     def warmup(self) -> None:
         self._ensure_model()
@@ -108,14 +170,33 @@ class LocalEmotionTagger(BaseEmotionTagger):
         if self._model is None:
             if not self.is_model_cached():
                 self.download_model()
-            logger.info("正在加载情感分类模型 %s …", self._model_name)
+            self._resolved_model_name = self._pick_available_model()
+            logger.info("正在加载情感分类模型 %s …", self._resolved_model_name)
             from transformers import AutoModelForSequenceClassification, AutoTokenizer
-            tok = AutoTokenizer.from_pretrained(self._model_name)
-            model = AutoModelForSequenceClassification.from_pretrained(self._model_name)
+            model_path = resolve_local_model_path(self._resolved_model_name)
+            tok = AutoTokenizer.from_pretrained(model_path)
+            model = AutoModelForSequenceClassification.from_pretrained(model_path)
             self._model = (model, tok)
             # warmup
             self._predict_one("测试文本")
             logger.info("情感分类模型加载完成")
+
+    def _pick_available_model(self) -> str:
+        for model_name in self._candidate_models:
+            if is_model_cached(model_name):
+                return model_name
+        return self._candidate_models[0]
+
+    def _normalize_label(self, pred_id: int, raw_label: str) -> str:
+        mapping = MODEL_LABEL_MAPPINGS.get(self._resolved_model_name, {})
+        if pred_id in mapping:
+            return mapping[pred_id]
+        lowered = str(raw_label).strip().lower()
+        if lowered in mapping:
+            return mapping[lowered]
+        if lowered in EMOTION_LABELS:
+            return lowered
+        return "neutral"
 
     # ── predict ─────────────────────────────────────────────────────────────
 
@@ -127,7 +208,7 @@ class LocalEmotionTagger(BaseEmotionTagger):
             logits = model(**inputs).logits
         pred_id = int(logits.argmax(dim=-1).item())
         labels = model.config.id2label
-        return labels.get(pred_id, "neutral")
+        return self._normalize_label(pred_id, labels.get(pred_id, "neutral"))
 
     def tag(self, text: str) -> str:
         if not text or not text.strip():
@@ -158,7 +239,7 @@ class LocalEmotionTagger(BaseEmotionTagger):
                 preds = logits.argmax(dim=-1).tolist()
                 labels = model.config.id2label
                 for p in preds:
-                    results.append(labels.get(p, "neutral"))
+                    results.append(self._normalize_label(p, labels.get(p, "neutral")))
             except Exception as e:
                 logger.warning("batch tag failed for chunk %d: %s", i, e)
                 results.extend(["neutral"] * len(batch))
@@ -232,7 +313,7 @@ def build_tagger(
         emotion:
             enabled: true
             provider: "local" | "llm"
-            model: "jefferyluo/bert-chinese-emotion"
+            model: "Johnson8187/Chinese-Emotion-Small"
             emotion_boost_weight: 1.5
     """
     emotion_cfg = config.get("emotion", {})
@@ -252,6 +333,6 @@ def build_tagger(
 
     # local BERT tagger
     return LocalEmotionTagger(
-        model_name=emotion_cfg.get("model", "jefferyluo/bert-chinese-emotion"),
+        model_name=emotion_cfg.get("model", DEFAULT_LOCAL_EMOTION_MODEL),
         device=emotion_cfg.get("device", "cpu"),
     )

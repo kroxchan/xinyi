@@ -63,6 +63,7 @@ class LearningLoop:
             "start_time": "",
             "end_time": "",
             "turn_count": conversation_text.count("\n") + 1,
+            "emotion_tag": "neutral",
         }
         self.vector_store.add_conversations([conv_doc], self.embedder)
 

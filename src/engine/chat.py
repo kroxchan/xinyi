@@ -109,7 +109,15 @@ class ChatEngine:
 
         def _do_retrieve():
             q = user_message
-            mem = self.memory_retriever.retrieve(q, top_k=self.top_k_vectors, contact_wxid=contact_wxid)
+            query_emotion = None
+            if self.emotion_tracker:
+                query_emotion = self.emotion_tracker.current_emotion
+            mem = self.memory_retriever.retrieve(
+                q,
+                top_k=self.top_k_vectors,
+                contact_wxid=contact_wxid,
+                query_emotion=query_emotion,
+            )
             bel_raw = self.belief_graph.query_by_topic(user_message, top_k=self.top_k_beliefs)
             bel_lines: list[str] = []
             for b in bel_raw:

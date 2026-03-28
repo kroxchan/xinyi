@@ -29,6 +29,12 @@ class _FakeVectorStore:
                 for i, h in enumerate(self._hits[:top_k])]
 
 
+class _FakeReranker:
+    def rerank(self, query, candidates, top_k):
+        ordered = list(reversed(candidates))
+        return [{"content": text, "score": float(len(ordered) - i)} for i, text in enumerate(ordered[:top_k])]
+
+
 def test_retrieve_returns_formatted_fragments(mock_embedder):
     """With hits, retriever returns correctly formatted [记忆片段N] strings."""
     from src.memory.retriever import MemoryRetriever
@@ -123,3 +129,43 @@ def test_retrieve_includes_date_and_contact_in_fragment_header(mock_embedder):
     assert "2024-03-14" in result
     assert "女朋友" in result
     assert "我想你了" in result
+
+
+def test_retrieve_uses_reranker_order(mock_embedder):
+    """Reranker can reorder coarse vector results before final formatting."""
+    from src.memory.retriever import MemoryRetriever
+
+    vs = _FakeVectorStore([
+        _FakeHit("first", metadata={"start_time": "2024-01-01", "contact": "A"}),
+        _FakeHit("second", metadata={"start_time": "2024-01-02", "contact": "A"}),
+        _FakeHit("third", metadata={"start_time": "2024-01-03", "contact": "A"}),
+    ])
+    retriever = MemoryRetriever(vs, mock_embedder, reranker=_FakeReranker(), top_k_raw=3, top_k_reranked=2)
+
+    result = retriever.retrieve("query", top_k=2)
+
+    assert result.index("third") < result.index("second")
+    assert "first" not in result
+
+
+def test_retrieve_emotion_boost_prefers_matching_chunks(mock_embedder):
+    """Emotion-tagged hits should be boosted when query_emotion matches metadata."""
+    from src.memory.retriever import MemoryRetriever
+
+    vs = _FakeVectorStore([
+        _FakeHit(
+            "neutral hit",
+            distance=0.1,
+            metadata={"start_time": "2024-01-01", "contact": "A", "emotion_tag": "neutral"},
+        ),
+        _FakeHit(
+            "angry hit",
+            distance=0.8,
+            metadata={"start_time": "2024-01-02", "contact": "A", "emotion_tag": "anger"},
+        ),
+    ])
+    retriever = MemoryRetriever(vs, mock_embedder, emotion_boost_weight=20.0)
+
+    result = retriever.retrieve("query", top_k=1, query_emotion="anger")
+
+    assert "angry hit" in result

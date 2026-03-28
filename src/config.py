@@ -129,7 +129,7 @@ class EmotionConfig(BaseModel):
     """Emotion tagging config (P2-6)."""
     enabled: bool = False
     provider: Literal["local", "llm"] = "local"
-    model: str = "jefferyluo/bert-chinese-emotion"
+    model: str = "Johnson8187/Chinese-Emotion-Small"
     emotion_boost_weight: float = 1.5  # weight multiplier when emotion matches
 
 

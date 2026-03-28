@@ -373,7 +373,9 @@ def init_components(config: dict) -> dict:
     from src.data.parser import WeChatDBParser
     from src.data.cleaner import MessageCleaner
     from src.data.conversation_builder import ConversationBuilder
+    from src.data.emotion_tagger import build_tagger
     from src.memory.embedder import TextEmbedder
+    from src.memory.reranker import build_reranker
     from src.memory.vector_store import VectorStore
     from src.memory.retriever import MemoryRetriever
     from src.personality.analyzer import PersonalityAnalyzer
@@ -406,7 +408,6 @@ def init_components(config: dict) -> dict:
         offline=emb_cfg.get("offline", True),
     )
     vector_store = VectorStore(persist_dir=paths["chroma_dir"])
-    retriever = MemoryRetriever(vector_store, embedder)
 
     analyzer = PersonalityAnalyzer()
 
@@ -461,6 +462,17 @@ def init_components(config: dict) -> dict:
         base_url=api_cfg.get("base_url"),
         default_headers=api_cfg.get("headers", {}),
     )
+    reranker = build_reranker(config)
+    emotion_tagger = build_tagger(config, api_client=_emo_client)
+    retriever = MemoryRetriever(
+        vector_store,
+        embedder,
+        reranker=reranker,
+        top_k_raw=config.get("rerank", {}).get("top_k_raw", 20),
+        top_k_reranked=config.get("rerank", {}).get("top_k_reranked", 5),
+        emotion_tagger=emotion_tagger,
+        emotion_boost_weight=config.get("emotion", {}).get("emotion_boost_weight", 1.5),
+    )
     emotion_tracker = EmotionTracker(
         emotion_profile,
         api_client=_emo_client,
@@ -514,6 +526,7 @@ def init_components(config: dict) -> dict:
         "embedder": embedder,
         "vector_store": vector_store,
         "retriever": retriever,
+        "reranker": reranker,
         "analyzer": analyzer,
         "prompt_builder": prompt_builder,
         "belief_graph": belief_graph,
@@ -521,6 +534,7 @@ def init_components(config: dict) -> dict:
         "memory_bank": memory_bank,
         "chat_engine": chat_engine,
         "learning_loop": learning_loop,
+        "emotion_tagger": emotion_tagger,
         "emotion_tracker": emotion_tracker,
         "task_library": task_library,
         "inference_engine": inference_engine,
@@ -1146,9 +1160,11 @@ def _detect_pipeline_status() -> dict:
     has_decrypted = len(decrypted_dbs) > 0
 
     has_training = False
+    has_emotion_tagged_vectors = False
     if components:
         try:
             has_training = components["vector_store"].count() > 0
+            has_emotion_tagged_vectors = components["vector_store"].has_metadata_key("emotion_tag")
         except Exception:
             pass
 
@@ -1169,6 +1185,7 @@ def _detect_pipeline_status() -> dict:
         "has_decrypted": has_decrypted,
         "db_count": len(decrypted_dbs),
         "has_training": has_training,
+        "has_emotion_tagged_vectors": has_emotion_tagged_vectors,
         "output_dir": output_dir,
         "has_partner": has_partner,
         "model_status": model_status,
@@ -1501,7 +1518,7 @@ def _step3_pipeline(runner):
     """
     global contact_registry
     from src.data.decrypt import DecryptStep as DS
-    from src.engine.training import set_contact_registry
+    from src.engine.training import TrainingPipeline, set_contact_registry
 
     c = components
     config = c["config"]
@@ -1517,6 +1534,7 @@ def _step3_pipeline(runner):
         components=c,
         use_twin_mode=True,
         runner=runner,
+        force_rebuild_vectors=True,
     )
 
     if success:
@@ -1591,7 +1609,7 @@ def _import_pipeline(runner):
     """
     global contact_registry
     from src.data.decrypt import DecryptStep as DS
-    from src.engine.training import set_contact_registry
+    from src.engine.training import TrainingPipeline, set_contact_registry
 
     c = components
     config = c["config"]
@@ -1629,6 +1647,7 @@ def _import_pipeline(runner):
         use_twin_mode=(twin_mode == "self"),
         runner=runner,
         skip_steps=2,  # Steps 1 (decrypt) and 2 (parse) already done — DB already decrypted
+        force_rebuild_vectors=True,
     )
 
     if success:
@@ -2088,6 +2107,20 @@ def get_system_info() -> str:
 
     lines.append(f"\n模型: {config['api']['provider']} / {config['api']['model']}")
     lines.append(f"嵌入模型: {config['embedding']['model']}")
+    lines.append(
+        "重排模型: {}".format(
+            config.get("rerank", {}).get("model", "（未配置）")
+            if c.get("reranker")
+            else "未启用"
+        )
+    )
+    lines.append(
+        "情感小模型: {}".format(
+            config.get("emotion", {}).get("model", "（未配置）")
+            if c.get("emotion_tagger")
+            else "未启用"
+        )
+    )
     if config["api"].get("base_url"):
         lines.append(f"API Base URL: {config['api']['base_url']}")
 

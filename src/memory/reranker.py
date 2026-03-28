@@ -5,7 +5,7 @@ import os
 from abc import ABC, abstractmethod
 
 from src.logging_config import get_logger
-from src.utils.model_download import download_model_once, is_model_cached
+from src.utils.model_download import download_model_once, is_model_cached, resolve_local_model_path
 
 logger = get_logger(__name__)
 
@@ -70,7 +70,8 @@ class BGEReranker(BaseReranker):
             logger.info("正在加载 rerank 模型 %s …", self._model_name)
             from sentence_transformers import CrossEncoder
 
-            self._model = CrossEncoder(self._model_name, device=self._device)
+            model_path = resolve_local_model_path(self._model_name)
+            self._model = CrossEncoder(model_path, device=self._device)
             # warmup
             self._model.predict([("warmup", "warmup")])
             logger.info("rerank 模型加载完成")

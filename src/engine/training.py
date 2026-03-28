@@ -153,6 +153,7 @@ class TrainingPipeline:
         self._twin_label: str = "自己" if self._twin_mode == "self" else "对象"
         self._db_mt: float = 0.0
         self._skipped: int = 0
+        self._force_rebuild_vectors: bool = False
 
     # ------------------------------------------------------------------
     # Step 1 — Decrypt DB
@@ -319,6 +320,101 @@ class TrainingPipeline:
             "{:,} 段对话（{} 侧为主角）".format(len(conversations), self._twin_label),
         )
 
+    def _step4b_prepare_local_models(self, ds: DS, components: dict, runner=None) -> DS:
+        """Ensure all enabled local models are ready before vectorisation/training."""
+        if not ds.ok:
+            return ds
+
+        prepared: list[str] = []
+
+        embedder = components.get("embedder")
+        if embedder is not None:
+            if runner is not None:
+                runner.add(DS("嵌入模型", True, "检查中…"))
+            try:
+                was_cached = embedder.is_model_cached()
+                if not was_cached:
+                    if runner is not None:
+                        def _do_embed_download():
+                            embedder.download_model()
+                            return DS("嵌入模型", True, "已下载")
+                        _timed(
+                            runner,
+                            _do_embed_download,
+                            lambda e: DS("嵌入模型", True, "下载中… 已等待 {}s".format(e)),
+                            interval=3,
+                        )
+                    else:
+                        embedder.download_model()
+                if not embedder.is_model_cached():
+                    return DS("本地模型准备", False, "嵌入模型下载失败，请检查网络连接")
+                if runner is not None:
+                    runner.update(DS("嵌入模型", True, "已缓存" if was_cached else "已下载"))
+                prepared.append("嵌入（已缓存）" if was_cached else "嵌入（已下载）")
+            except Exception:
+                logger.exception("Embedding model preparation failed")
+                return DS("本地模型准备", False, "嵌入模型下载失败，请检查网络连接")
+
+        reranker = components.get("reranker")
+        if reranker is not None:
+            if runner is not None:
+                runner.add(DS("重排模型", True, "检查中…"))
+            try:
+                was_cached = hasattr(reranker, "is_model_cached") and reranker.is_model_cached()
+                if hasattr(reranker, "is_model_cached") and not was_cached:
+                    if runner is not None:
+                        def _do_rerank_download():
+                            reranker.download_model()
+                            return DS("重排模型", True, "已下载")
+                        _timed(
+                            runner,
+                            _do_rerank_download,
+                            lambda e: DS("重排模型", True, "下载中… 已等待 {}s".format(e)),
+                            interval=3,
+                        )
+                    else:
+                        reranker.download_model()
+                if hasattr(reranker, "is_model_cached") and not reranker.is_model_cached():
+                    return DS("本地模型准备", False, "重排模型下载失败，请检查网络连接")
+                if runner is not None:
+                    runner.update(DS("重排模型", True, "已缓存" if was_cached else "已下载"))
+                prepared.append("重排（已缓存）" if was_cached else "重排（已下载）")
+            except Exception:
+                logger.exception("Reranker preparation failed")
+                return DS("本地模型准备", False, "重排模型下载失败，请检查网络连接")
+
+        emotion_tagger = components.get("emotion_tagger")
+        if emotion_tagger is not None:
+            if runner is not None:
+                runner.add(DS("情感模型", True, "检查中…"))
+            try:
+                was_cached = hasattr(emotion_tagger, "is_model_cached") and emotion_tagger.is_model_cached()
+                if hasattr(emotion_tagger, "is_model_cached") and not was_cached:
+                    if runner is not None:
+                        def _do_emotion_download():
+                            emotion_tagger.download_model()
+                            return DS("情感模型", True, "已下载")
+                        _timed(
+                            runner,
+                            _do_emotion_download,
+                            lambda e: DS("情感模型", True, "下载中… 已等待 {}s".format(e)),
+                            interval=3,
+                        )
+                    else:
+                        emotion_tagger.download_model()
+                if hasattr(emotion_tagger, "is_model_cached") and not emotion_tagger.is_model_cached():
+                    return DS("本地模型准备", False, "情感模型下载失败，请检查网络连接或镜像源")
+                if runner is not None:
+                    runner.update(DS("情感模型", True, "已缓存" if was_cached else "已下载"))
+                prepared.append("情感（已缓存）" if was_cached else "情感（已下载）")
+            except Exception:
+                logger.exception("Emotion model preparation failed")
+                return DS("本地模型准备", False, "情感模型下载失败，请检查网络连接")
+
+        if not prepared:
+            return DS("本地模型准备", True, "未启用额外本地模型")
+        return DS("本地模型准备", True, "已就绪：{}".format("、".join(prepared)))
+
     # ------------------------------------------------------------------
     # Step 5 — Embed & vectorise
     # ------------------------------------------------------------------
@@ -358,13 +454,32 @@ class TrainingPipeline:
                 return DS("嵌入模型", False, "嵌入模型下载失败，请检查网络连接")
 
         # Vectorisation
-        vec_count = components["vector_store"].count()
+        vector_store = components["vector_store"]
+        vec_count = vector_store.count()
         chroma_sqlite = Path(self.config["paths"]["chroma_dir"]) / "chroma.sqlite3"
-        if vec_count > 0 and _ckpt_valid(chroma_sqlite, self._db_mt, min_size=1000):
+        has_emotion_tags = vector_store.has_metadata_key("emotion_tag")
+        can_skip = (
+            not self._force_rebuild_vectors
+            and vec_count > 0
+            and _ckpt_valid(chroma_sqlite, self._db_mt, min_size=1000)
+            and has_emotion_tags
+        )
+        if can_skip:
             self._skipped += 1
             return DS("向量化存储", True, "已有 {:,} 段，跳过 ⏩".format(vec_count))
         else:
             try:
+                if vec_count > 0 and (self._force_rebuild_vectors or not has_emotion_tags):
+                    reason = "重训强制重建" if self._force_rebuild_vectors else "旧库缺少 emotion_tag"
+                    if runner is not None:
+                        runner.update(DS("向量化存储", True, "正在重建向量库（{}）…".format(reason)))
+                    vector_store.clear()
+                emotion_tagger = components.get("emotion_tagger")
+                if emotion_tagger:
+                    texts = [conv.get("text", "") for conv in self._conversations]
+                    tags = emotion_tagger.tag_batch(texts)
+                    for conv, tag in zip(self._conversations, tags):
+                        conv["emotion_tag"] = tag or "neutral"
                 components["vector_store"].add_conversations(
                     self._conversations, components["embedder"])
                 return DS(
@@ -713,6 +828,7 @@ class TrainingPipeline:
         use_twin_mode: bool = True,
         runner=None,
         skip_steps: int = 0,
+        force_rebuild_vectors: bool = False,
     ) -> tuple[bool, str]:
         """Execute the full pipeline (steps 1-6), handling threading and errors.
 
@@ -747,6 +863,7 @@ class TrainingPipeline:
         twin_label = "自己" if twin_mode_actual == "self" else "对象"
         self._twin_mode = twin_mode_actual
         self._twin_label = twin_label
+        self._force_rebuild_vectors = force_rebuild_vectors
 
         self._db_mt = _get_db_mtime(self.config)
 
@@ -798,9 +915,19 @@ class TrainingPipeline:
         if not ds4.ok:
             return False, ds4.message
 
+        # ── Step 4.5 ────────────────────────────────────────────────────
+        try:
+            ds45 = self._step4b_prepare_local_models(ds4, components, runner=runner)
+        except Exception as exc:
+            logger.exception("[PIPELINE] Step 4.5 crashed: %s", exc)
+            return False, "Step 4.5 (本地模型准备) 异常: {}".format(exc)
+        runner.add(ds45)
+        if not ds45.ok:
+            return False, ds45.message
+
         # ── Step 5 ──────────────────────────────────────────────────────
         def _do_embed():
-            return self._step5_embed(ds4, components, runner=runner)
+            return self._step5_embed(ds45, components, runner=runner)
 
         try:
             ds5 = _timed(

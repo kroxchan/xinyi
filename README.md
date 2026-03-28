@@ -79,7 +79,7 @@
 
 连续对话中情绪变化是连贯的，不会上一句还在生气，下一句突然温柔。
 
-**情感感知分块**（可选）：训练阶段给每个对话片段打上情感标签（开心/生气/委屈等），检索时优先召回与当前情绪一致的聊天片段，适配不同情绪语境。
+**情感感知分块**（可选）：训练阶段给每个对话片段打上情感标签（开心/生气/委屈等），写入向量库 metadata；检索时优先召回与当前情绪一致的聊天片段，适配不同情绪语境。
 
 ### 5. 认知校准
 
@@ -135,7 +135,7 @@
 |------|------|------|---------|
 | 向量化 | shibing624/text2vec-base-chinese | ~400MB | ~50ms/次 |
 | 重排（可选） | BAAI/bge-reranker-base | ~400MB | ~100ms/次 |
-| 情感分类（可选） | jefferyluo/bert-chinese-emotion | ~300MB | <50ms/chunk |
+| 情感分类（可选） | Johnson8187/Chinese-Emotion-Small | ~1.1GB | <100ms/chunk |
 
 ---
 
@@ -186,7 +186,7 @@ python src/app.py
 
 浏览器打开 http://localhost:7872 ，跟向导走：**连接 → 选择 TA → 选训练模式 → 学习** → 完成。
 
-> 首次训练时系统会自动下载嵌入模型（约 1-2GB），下载完成后后续启动不再需要联网。
+> 首次训练时系统会自动检查并下载嵌入、重排、情感模型；国内网络会优先尝试 `hf-mirror.com`，下载完成后后续启动不再需要联网。
 
 ---
 
@@ -217,7 +217,7 @@ docker-compose up
 
 ### 方式三：下载安装包（无需 Python 环境）
 
-直接下载打包好的安装包，双击即可运行：
+直接下载打包好的安装包，双击即可运行。macOS / Windows 安装包由 GitHub Actions 自动构建并上传到 Release：
 
 👉 [前往 Releases 下载](https://github.com/kroxchan/xinyi/releases/latest)
 
@@ -242,13 +242,14 @@ docker-compose up
 
 | 模块 | 改动 | 说明 |
 |------|------|------|
-| Tab 模块化 | `app.py` 4500 行拆分为 `src/ui/tabs/` 下的独立文件 | 修改一个 Tab 不影响其他模块 |
+| Tab 模块化 | 已引入 `src/ui/tabs/` 基础模块 | 逐步把 UI 从 `app.py` 中拆分出去 |
 | 日志体系 | `src/logging_config.py`（loguru + 结构化日志） | 关键节点全链路埋点，可输出到文件 |
 | 异常规范化 | `src/exceptions.py` | 语义化异常替代模糊 try-catch，报错信息精准可操作 |
 | 测试体系 | `tests/`（pytest + mock） | 检索、重排、清洗、情感分类核心逻辑有覆盖 |
 | 配置分层 | `src/config.py`（pydantic BaseSettings） | .env / config.yaml 分层，支持 dev/prod 切换 |
 | 隐私脱敏 | `src/data/privacy_redactor.py` | 微信号、位置、转账金额等可配置脱敏 |
 | API 热重载 | 保存 API 配置后无需手动重启 | 配置页一键保存，分身引擎自动重建 |
+| 双小模型接入 | `reranker + emotion_tagger` | 训练时自动校验下载，检索时重排并按情绪加权 |
 
 ---
 

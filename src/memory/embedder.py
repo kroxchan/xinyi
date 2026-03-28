@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from src.utils.model_download import download_model_once, is_model_cached
+from src.utils.model_download import download_model_once, is_model_cached, resolve_local_model_path
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,8 @@ class TextEmbedder:
                 self.download_model()
             logger.info("正在加载嵌入模型 %s …", self._model_name)
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_name, device=self._device)
+            model_path = resolve_local_model_path(self._model_name)
+            self._model = SentenceTransformer(model_path, device=self._device)
             self._model.encode(["warmup"], normalize_embeddings=True)
             logger.info("嵌入模型加载完成")
 

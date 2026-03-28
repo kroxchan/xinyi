@@ -58,9 +58,9 @@ rerank:
 
 # 情感感知配置（P2-6：训练时给每个 chunk 打情感标签，检索时优先召回情绪相近的 chunk）
 emotion:
-  enabled: false               # 设为 true 启用情感标签（需先运行 scripts/init_models.sh 下载模型）
+  enabled: true                # 默认开启；训练开始时会自动检查并下载所需模型
   provider: "local"           # "local"（BERT模型）| "llm"（LLM推理）
-  model: "jefferyluo/bert-chinese-emotion"
+  model: "Johnson8187/Chinese-Emotion-Small"
   emotion_boost_weight: 1.5   # 情绪匹配加权系数（>1 优先召回同情绪 chunk）
 
 # 日志配置

@@ -104,6 +104,7 @@ class ConversationBuilder:
                         "contact": contact,
                         "start_time": turns[0]["timestamp"],
                         "end_time": turns[-1]["timestamp"],
+                        "turn_count": len(turns),
                         "turns": turns,
                         "text": text,
                     }
