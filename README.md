@@ -215,6 +215,27 @@ docker-compose up
 
 ---
 
+### 方式三：下载安装包（无需 Python 环境）
+
+直接下载打包好的安装包，双击即可运行：
+
+👉 [前往 Releases 下载](https://github.com/kroxchan/xinyi/releases/latest)
+
+| 操作系统 | 下载文件 |
+|----------|----------|
+| macOS | `xinyi-macos.zip` |
+| Windows | `xinyi-windows.zip` |
+
+**macOS：** 解压后双击 `xinyi.app`，首次打开按提示允许运行（系统设置 → 隐私与安全性 → 仍要打开）。
+
+**Windows：** 解压后双击 `xinyi.exe`，会弹出一个黑色日志窗口（正常现象，勿关闭）。
+
+启动后自动打开浏览器 `http://localhost:7872`，按向导配置 API Key 即可使用。
+
+详细步骤见 [INSTALL.md](https://github.com/kroxchan/xinyi/blob/main/INSTALL.md)。
+
+---
+
 ## 工程化升级（本次迭代）
 
 本次更新在保持核心能力不变的前提下，大幅改善了可维护性和开发体验：
@@ -237,7 +258,6 @@ docker-compose up
 |------|---------|------|
 | macOS | ✅ 全自动 | 首次需 ad-hoc 重签微信 |
 | Windows 10/11 | ✅ 全自动 | 需管理员终端启动 |
-| Linux | ✅ 全自动 | 需 root 或 `CAP_SYS_PTRACE` |
 
 支持微信 4.x（SQLCipher 4 加密）。
 
