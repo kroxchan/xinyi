@@ -19,25 +19,17 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov
+        run: pip install -r requirements.txt && pip install pytest pytest-cov
 
       - name: Run tests
         run: |
-          # First: verify Python can import all src modules (catch import errors early)
-          python -c "
-            import sys; sys.path.insert(0, '.')
-            from src.config import AppConfig
-            from src.exceptions import XinyiBaseError
-            from src.logging_config import setup_logging
-            from src.memory.reranker import build_reranker
-            from src.data.emotion_tagger import build_tagger
-            from src.data.privacy_redactor import PrivacyRedactor
-            from src.engine.advisor_registry import get_registry
-            print('All imports OK')
-          "
-          # Then run pytest (skip coverage to keep CI fast and focused)
+          echo "Python version: $(python --version)"
+          echo "pytest version: $(pip show pytest | grep Version)"
+          echo "---"
+          echo "Running import check..."
+          python -c "import sys; sys.path.insert(0, '.'); exec(open('tests/check_imports.py').read())" || exit 1
+          echo "---"
+          echo "Running pytest..."
           pytest tests/ -v --tb=short
 
   lint:
@@ -56,7 +48,6 @@ jobs:
 
       - name: Run flake8
         run: |
-          # Lint key modules only (exclude vendor)
           flake8 src/ tests/ --max-line-length=120 \
             --exclude=vendor,__pycache__,.pytest_cache \
             --ignore=E501,F401,W503 \
