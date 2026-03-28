@@ -382,6 +382,7 @@ def init_components(config: dict) -> dict:
     from src.belief.graph import BeliefGraph
     from src.engine.chat import ChatEngine
     from src.engine.learning import LearningLoop
+    from src.engine.training import TrainingPipeline
 
     paths = config["paths"]
     emb_cfg = config["embedding"]
@@ -1486,426 +1487,39 @@ def run_step3_decrypt_only():
 
 
 def _step3_pipeline(runner):
-    """Step 3 pipeline: decrypt DBs + full training. Runs in a background thread."""
+    """Step 3 pipeline: decrypt DBs + full training. Runs in a background thread.
+
+    Delegates the core steps to TrainingPipeline so they are shared with
+    _import_pipeline (the no-decrypt variant).
+    """
     global contact_registry
-    from src.data.decrypt import WeChatDecryptor, DecryptStep as DS
-    from src.personality.prompt_builder import PromptBuilder
+    from src.data.decrypt import DecryptStep as DS
+    from src.engine.training import set_contact_registry
 
     c = components
     config = c["config"]
     output_dir = config["paths"].get("raw_db_dir", "data/raw")
-    dec = WeChatDecryptor(output_dir=output_dir)
+    set_contact_registry(contact_registry)
 
-    keys_file = Path("vendor/wechat-decrypt/all_keys.json").resolve()
-    if not keys_file.exists():
-        runner.add(DS("检查密钥", False, "未找到密钥文件，请先完成第 2 步"))
-        return
-    try:
-        with open(keys_file) as f:
-            kdata = json.load(f)
-        count = len(kdata) if isinstance(kdata, dict) else 0
-        runner.add(DS("检查密钥", True, "{} 个密钥".format(count)))
-    except Exception as e:
-        runner.add(DS("检查密钥", False, str(e)))
-        return
+    pipeline = TrainingPipeline(c, contact_registry=contact_registry)
 
-    runner.add(DS("数据库解密", True, "正在解密…"))
-    try:
-        step = _timed(runner, lambda: dec.decrypt_databases(),
-                      lambda e: DS("数据库解密", True, "解密中… 已等待 {}s".format(e)))
-        runner.update(step)
-        if not step.ok:
-            return
-    except Exception as e:
-        runner.update(DS("数据库解密", False, str(e)))
-        return
-
-    c["parser"].set_db_dir(output_dir)
-
-    runner.add(DS("读取消息", True, "正在读取微信数据库…"))
-    messages = c["parser"].get_all_text_messages()
-    if not messages:
-        runner.update(DS("读取消息", False, "未找到消息，解密可能未生成有效数据库"))
-        return
-    runner.update(DS("读取消息", True, "{:,} 条文本消息".format(len(messages))))
-
-    from src.data.partner_config import load_partner_wxid, load_twin_mode
-    pw = load_partner_wxid().strip()
-    if not pw:
-        runner.update(DS("确认对象", False, "请先在「选择 TA」中扫描并保存对象"))
-        return
-    twin_mode = load_twin_mode()
-    twin_label = "自己" if twin_mode == "self" else "对象"
-    runner.add(DS("训练模式", True, "训练 **{}** 的分身".format(twin_label)))
-
-    cleaned_all = c["cleaner"].clean_messages(messages)
-    cs = c["cleaner"].last_stats
-    cleaned = [m for m in cleaned_all if m.get("StrTalker") == pw]
-    if len(cleaned) < PARTNER_MIN_TRAIN_MESSAGES:
-        runner.update(DS(
-            "对象会话",
-            False,
-            "与对象的清洗后消息仅 {:,} 条（至少需要 {} 条），请确认选对人或先多聊一些".format(
-                len(cleaned), PARTNER_MIN_TRAIN_MESSAGES,
-            ),
-        ))
-        return
-    clean_detail = "全库清洗 {:,} 条 → **仅对象** {:,} 条（过滤 {:,} 条非对象）".format(
-        len(cleaned_all), len(cleaned), len(cleaned_all) - len(cleaned),
+    success, msg = pipeline.run_full(
+        db_path=output_dir,
+        wxid="",
+        partner_wxid="",
+        components=c,
+        use_twin_mode=True,
+        runner=runner,
     )
-    if cs:
-        parts = []
-        if cs.dropped_binary:
-            parts.append("二进制{}".format(cs.dropped_binary))
-        if cs.dropped_system:
-            parts.append("系统消息{}".format(cs.dropped_system))
-        if cs.dropped_pure_emoji:
-            parts.append("纯表情{}".format(cs.dropped_pure_emoji))
-        if cs.dropped_pure_url:
-            parts.append("纯链接{}".format(cs.dropped_pure_url))
-        if cs.dropped_too_short:
-            parts.append("过短{}".format(cs.dropped_too_short))
-        if cs.stripped_wxid_prefix:
-            parts.append("群聊wxid前缀清除{}".format(cs.stripped_wxid_prefix))
-        if cs.redacted_pii:
-            parts.append("PII脱敏{}".format(cs.redacted_pii))
-        if parts:
-            clean_detail += "（" + "、".join(parts) + "）"
-    runner.add(DS("数据清洗", True, clean_detail))
 
-    c["builder"].twin_mode = twin_mode
-    conversations = c["builder"].build_conversations(cleaned)
-    for conv in conversations:
-        conv["turn_count"] = len(conv.get("turns", []))
-    runner.add(DS("构建对话段", True, "{:,} 段对话（{} 侧为主角）".format(len(conversations), twin_label)))
-
-    # --- checkpoint detection ---
-    db_mt = _get_db_mtime(config)
-    skipped = 0
-
-    # --- 人格分析 ---
-    persona_path = Path(config["paths"]["persona_file"])
-    _needs_regen = not _ckpt_valid(persona_path, db_mt)
-    if not _needs_regen:
-        profile = yaml.safe_load(open(persona_path, encoding="utf-8"))
-        if not profile.get("vocab_bank"):
-            _needs_regen = True
-    if not _needs_regen:
-        runner.add(DS("人格分析", True, "已有数据，跳过 ⏩"))
-        skipped += 1
-    else:
-        runner.add(DS("人格分析", True, "正在分析人格特征（{} 侧）…".format(twin_label)))
-        profile = _timed(runner, lambda: c["analyzer"].analyze(cleaned, twin_mode=twin_mode),
-                         lambda e: DS("人格分析", True, "分析中… 已等待 {}s".format(e)))
-        persona_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(persona_path, "w", encoding="utf-8") as f:
-            yaml.dump(profile, f, allow_unicode=True)
-        runner.update(DS("人格分析", True, "人格画像已生成并保存（含词库）"))
-
-    # --- 情绪训练 ---
-    from src.personality.emotion_analyzer import EmotionAnalyzer as _EA
-    from src.personality.emotion_tracker import EmotionTracker as _ET
-    emo_path = Path(config["paths"].get("emotion_file", "data/emotion_profile.yaml"))
-    if _ckpt_valid(emo_path, db_mt):
-        emo_profile = yaml.safe_load(open(emo_path, encoding="utf-8"))
-        runner.add(DS("情绪训练", True, "已有数据，跳过 ⏩"))
-        skipped += 1
-    else:
-        runner.add(DS("情绪训练", True, "正在训练情绪模型（{} 侧）…".format(twin_label)))
-        emo_analyzer = _EA()
-        emo_profile = _timed(runner, lambda: emo_analyzer.train(cleaned, twin_mode=twin_mode),
-                             lambda e: DS("情绪训练", True, "训练中… 已等待 {}s".format(e)))
-        emo_analyzer.save(str(emo_path))
-        emo_dist = emo_profile.get("emotion_distribution", {})
-        emo_sorted = sorted(emo_dist.items(), key=lambda x: -x[1])
-        emo_summary = ", ".join("{}:{}".format(k, v) for k, v in emo_sorted)
-        runner.update(DS("情绪训练", True, "已分析 {:,} 条消息，{}种情绪 ({})".format(emo_profile.get("total_analyzed", 0), len(emo_sorted), emo_summary)))
-    _api_cfg = config.get("api", {})
-    from openai import OpenAI as _OAI_emo
-    _emo_cl = _OAI_emo(
-        api_key=_api_cfg.get("api_key", ""),
-        base_url=_api_cfg.get("base_url"),
-        default_headers=_api_cfg.get("headers", {}),
-    )
-    c["emotion_tracker"] = _ET(emo_profile, api_client=_emo_cl, model=_api_cfg.get("model", "gpt-4o"))
-
-    # --- 思维训练 ---
-    think_path = Path(config["paths"].get("thinking_model_file", "data/thinking_model.txt"))
-    if _ckpt_valid(think_path, db_mt):
-        _thinking = think_path.read_text(encoding="utf-8")
-        runner.add(DS("思维训练", True, "已有数据（{} 字），跳过 ⏩".format(len(_thinking))))
-        skipped += 1
-    else:
-        runner.add(DS("思维训练", True, "正在从对话数据中提取思维模式（约 3-5 分钟）…"))
-        try:
-            from src.personality.thinking_profiler import ThinkingProfiler as _TP
-            api_cfg = config.get("api", {})
-            from openai import OpenAI as _OAI
-            _tp_client = _OAI(
-                api_key=api_cfg.get("api_key", ""),
-                base_url=api_cfg.get("base_url"),
-                default_headers=api_cfg.get("headers", {}),
-            )
-            tp = _TP(_tp_client, api_cfg.get("model", "gpt-4o"))
-            _thinking = _retry_api(
-                lambda: _timed(runner, lambda: tp.train(conversations),
-                               lambda e: DS("思维训练", True, "正在训练… 已等待 {}s".format(e))),
-                runner, "⚠ 思维训练",
-            )
-            _thinking = _thinking or ""
-            tp.save(_thinking, str(think_path))
-            runner.update(DS("思维训练", True, "数据驱动思维模型已生成（{} 字）".format(len(_thinking))))
-        except Exception as e:
-            logger.warning("Thinking profiler training failed: %s", e)
-            _thinking = ""
-            runner.update(DS("思维训练", False, "思维训练失败: {}".format(e)))
-
-    # --- 认知参数提取 ---
-    _cog_profile = {}
-    try:
-        from src.personality.thinking_profiler import ThinkingProfiler as _TP_cog
-        _cog_path = Path("data/cognitive_profile.json")
-        _s1_api = config.get("api", {})
-        if not _cog_path.exists() or (_cog_path.exists() and db_mt > _cog_path.stat().st_mtime):
-            runner.update(DS("认知参数", False, "提取认知风格参数…"))
-            from openai import OpenAI as _OAI_cog
-            _cog_client = _OAI_cog(
-                api_key=_s1_api.get("api_key", ""),
-                base_url=_s1_api.get("base_url"),
-                default_headers=_s1_api.get("headers", {}),
-            )
-            _tp_cog = _TP_cog(_cog_client, _s1_api.get("model", "gpt-4o"))
-            _cog_profile = _retry_api(
-                lambda: _tp_cog.extract_cognitive_profile(conversations),
-                runner, "⚠ 认知参数",
-            )
-            if _cog_profile:
-                _TP_cog.save_cognitive_profile(_cog_profile)
-                runner.update(DS("认知参数", True, "认知参数已提取"))
-            else:
-                runner.update(DS("认知参数", False, "数据不足，跳过"))
+    if success:
+        skipped = pipeline._skipped
+        if skipped:
+            runner.add(DS("学习完成", True, "跳过 {} 个已完成步骤 ⏩".format(skipped)))
         else:
-            _cog_profile = _TP_cog.load_cognitive_profile()
-            runner.update(DS("认知参数", True, "已有认知参数，跳过"))
-    except Exception as e:
-        logger.warning("Cognitive profile extraction failed: %s", e)
-        runner.update(DS("认知参数", False, "认知参数提取失败: {}".format(e)))
-
-    # --- 情绪边界提取 ---
-    _emo_boundaries = []
-    try:
-        from src.personality.thinking_profiler import ThinkingProfiler as _TP_eb
-        _eb_path = Path("data/emotion_boundaries.json")
-        _s1_api_eb = config.get("api", {})
-        if not _eb_path.exists() or (_eb_path.exists() and db_mt > _eb_path.stat().st_mtime):
-            runner.add(DS("情绪边界", False, "提取情绪反应边界…"))
-            from openai import OpenAI as _OAI_eb
-            _eb_client = _OAI_eb(
-                api_key=_s1_api_eb.get("api_key", ""),
-                base_url=_s1_api_eb.get("base_url"),
-                default_headers=_s1_api_eb.get("headers", {}),
-            )
-            _tp_eb = _TP_eb(_eb_client, _s1_api_eb.get("model", "gpt-4o"))
-            import src.app as _self_mod
-            _cr = getattr(_self_mod, 'contact_registry', None)
-            _emo_boundaries = _retry_api(
-                lambda: _tp_eb.extract_emotion_boundaries(conversations, contact_registry=_cr),
-                runner, "⚠ 情绪边界",
-            )
-            if _emo_boundaries:
-                _TP_eb.save_emotion_boundaries(_emo_boundaries)
-                _n_eb = sum(len(v) for v in _emo_boundaries.values()) if isinstance(_emo_boundaries, dict) else len(_emo_boundaries)
-                _rel_types = list(_emo_boundaries.keys()) if isinstance(_emo_boundaries, dict) else ["default"]
-                runner.update(DS("情绪边界", True, "已提取 {} 条（关系类型: {}）".format(_n_eb, ", ".join(_rel_types))))
-            else:
-                runner.update(DS("情绪边界", False, "数据不足，跳过"))
-        else:
-            _emo_boundaries = _TP_eb.load_emotion_boundaries()
-            _n_cached = sum(len(v) for v in _emo_boundaries.values()) if isinstance(_emo_boundaries, dict) else len(_emo_boundaries)
-            runner.add(DS("情绪边界", True, "已有情绪边界（{} 条），跳过".format(_n_cached)))
-            skipped += 1
-    except Exception as e:
-        logger.warning("Emotion boundary extraction failed: %s", e)
-        runner.update(DS("情绪边界", False, "情绪边界提取失败: {}".format(e)))
-
-    # --- 情绪表达风格提取 ---
-    _emo_expression = {}
-    try:
-        from src.personality.thinking_profiler import ThinkingProfiler as _TP_expr
-        _expr_path = Path("data/emotion_expression.json")
-        _s1_api_expr = config.get("api", {})
-        if not _expr_path.exists() or (_expr_path.exists() and db_mt > _expr_path.stat().st_mtime):
-            runner.add(DS("情绪表达", False, "提取情绪表达风格…"))
-            from openai import OpenAI as _OAI_expr
-            _expr_client = _OAI_expr(
-                api_key=_s1_api_expr.get("api_key", ""),
-                base_url=_s1_api_expr.get("base_url"),
-                default_headers=_s1_api_expr.get("headers", {}),
-            )
-            _tp_expr = _TP_expr(_expr_client, _s1_api_expr.get("model", "gpt-4o"))
-            _emo_expression = _retry_api(
-                lambda: _tp_expr.extract_emotion_expression_style(conversations),
-                runner, "⚠ 情绪表达",
-            )
-            if _emo_expression:
-                _TP_expr.save_emotion_expression(_emo_expression)
-                runner.update(DS("情绪表达", True, "已提取 {} 种情绪表达方式".format(len(_emo_expression))))
-            else:
-                runner.update(DS("情绪表达", False, "数据不足，跳过"))
-        else:
-            _emo_expression = _TP_expr.load_emotion_expression()
-            runner.add(DS("情绪表达", True, "已有情绪表达风格（{} 种），跳过".format(len(_emo_expression))))
-            skipped += 1
-    except Exception as e:
-        logger.warning("Emotion expression extraction failed: %s", e)
-        runner.update(DS("情绪表达", False, "情绪表达提取失败: {}".format(e)))
-
-    c["prompt_builder"] = PromptBuilder(
-        persona_profile=profile,
-        cold_start_description=config.get("cold_start_description", ""),
-        thinking_model=_thinking,
-        cognitive_profile=_cog_profile,
-        emotion_boundaries=_emo_boundaries,
-        emotion_expression=_emo_expression,
-    )
-    c["prompt_builder"].regenerate_guidance()
-    runner.update(DS("指引文件", True, "已生成 identity/thinking/emotion/style/rules.md"))
-    c["chat_engine"].set_components(
-        c["retriever"], c["belief_graph"], c["prompt_builder"],
-        c["vector_store"], c["emotion_tracker"],
-        memory_bank=c.get("memory_bank"),
-    )
-
-    # --- 嵌入模型检测 ---
-    _emb = c["embedder"]
-    if _emb.is_model_cached():
-        runner.add(DS("嵌入模型", True, "已就绪"))
+            runner.add(DS("学习完成", True, "所有步骤完成，请前往「校准」进一步校准"))
     else:
-        runner.add(DS("嵌入模型", True, "首次使用，正在下载嵌入模型（约 1-2GB）…"))
-        try:
-            _timed(runner, lambda: _emb.download_model(),
-                   lambda e: DS("嵌入模型", True, "下载中… 已等待 {}s".format(e)))
-            runner.update(DS("嵌入模型", True, "嵌入模型下载完成"))
-        except Exception as e:
-            runner.update(DS("嵌入模型", False, "下载失败: {}，请检查网络连接".format(e)))
-            return
-
-    # --- 向量化 ---
-    vec_count = c["vector_store"].count()
-    chroma_sqlite = Path(config["paths"]["chroma_dir"]) / "chroma.sqlite3"
-    if vec_count > 0 and _ckpt_valid(chroma_sqlite, db_mt, min_size=1000):
-        runner.add(DS("向量化存储", True, "已有 {:,} 段，跳过 ⏩".format(vec_count)))
-        skipped += 1
-    else:
-        runner.add(DS("向量化存储", True, "正在写入向量库…"))
-        try:
-            _timed(runner, lambda: c["vector_store"].add_conversations(conversations, c["embedder"]),
-                   lambda e: DS("向量化存储", True, "写入中… 已等待 {}s".format(e)))
-            runner.update(DS("向量化存储", True, "向量库共 {:,} 段".format(c["vector_store"].count())))
-        except Exception as e:
-            runner.update(DS("向量化存储", False, "向量化失败: {}".format(e)))
-
-    # --- 信念图谱 ---
-    bg = c["belief_graph"]
-    beliefs_path = Path(config["paths"]["beliefs_file"])
-    if bg.count() > 0 and _ckpt_valid(beliefs_path, db_mt, min_size=100):
-        runner.add(DS("重建信念图谱", True, "已有 {} 条信念，跳过 ⏩".format(bg.count())))
-        skipped += 1
-    else:
-        runner.add(DS("重建信念图谱", True, "正在从对话数据中提取信念…"))
-        old_count = bg.count()
-        bg.beliefs.clear()
-        bg.contradictions.clear()
-        bg._embeddings.clear()
-        bg._next_id = 1
-        bg.save()
-        ll = c["learning_loop"]
-        try:
-            _timed(runner, lambda: ll.batch_extract_beliefs(conversations, top_n_contacts=1, samples_per_contact=20),
-                   lambda e: DS("重建信念图谱", True, "提取中… 已等待 {}s（当前 {} 条）".format(e, bg.count())))
-            runner.update(DS("重建信念图谱", True, "{} → {} 条信念（从对话数据提取）".format(old_count, bg.count())))
-        except Exception as e:
-            logger.warning("Belief extraction failed: %s", e)
-            runner.update(DS("重建信念图谱", False, "信念图谱重建失败: {}".format(e)))
-
-    # --- 记忆提取 ---
-    mb = c.get("memory_bank")
-    if mb is None:
-        from src.memory.memory_bank import MemoryBank
-        mb = MemoryBank(filepath="data/memories.json", embedder=c["embedder"])
-        c["memory_bank"] = mb
-    mem_path = Path("data/memories.json")
-    if mb.count() > 0 and _ckpt_valid(mem_path, db_mt, min_size=10):
-        high_conf = sum(1 for m in mb.memories if m.confidence >= 0.7)
-        runner.add(DS("记忆提取", True, "已有 {} 条记忆（高置信 {} 条），跳过 ⏩".format(mb.count(), high_conf)))
-        skipped += 1
-    else:
-        runner.add(DS("记忆提取", True, "正在从对话中提取事实记忆…"))
-        try:
-            mb.clear()
-            _api_mb = config.get("api", {})
-            from openai import OpenAI as _OAI_mb
-            _mb_client = _OAI_mb(
-                api_key=_api_mb.get("api_key", ""),
-                base_url=_api_mb.get("base_url"),
-                default_headers=_api_mb.get("headers", {}),
-            )
-            _timed(runner, lambda: mb.batch_extract(conversations, _mb_client, _api_mb.get("model", "gpt-4o")),
-                   lambda e: DS("记忆提取", True, "提取中… 已等待 {}s（当前 {} 条）".format(e, mb.count())))
-            high_conf = sum(1 for m in mb.memories if m.confidence >= 0.7)
-            runner.update(DS("记忆提取", True, "{} 条记忆（高置信 {} 条）".format(mb.count(), high_conf)))
-        except Exception as e:
-            logger.warning("Memory extraction failed: %s", e)
-            runner.update(DS("记忆提取", False, "记忆提取失败: {}".format(e)))
-
-    # --- 联系人分类 ---
-    contacts_path = Path("data/contacts.json")
-    if _ckpt_valid(contacts_path, db_mt, min_size=10):
-        runner.add(DS("联系人分类", True, "已有数据，跳过 ⏩"))
-        skipped += 1
-    else:
-        runner.add(DS("联系人分类", True, "正在更新联系人库与对象聊天风格…"))
-        try:
-            if contact_registry is None:
-                from src.data.contact_registry import ContactRegistry
-                contact_registry = ContactRegistry()
-            contacts_db = c["parser"].get_contacts()
-            contact_registry.build_from_messages(messages, contacts_db)
-            if pw in contact_registry.contacts:
-                style = c["analyzer"].analyze_per_contact(cleaned, pw)
-                if style:
-                    contact_registry.set_chat_style(pw, style)
-            runner.update(DS(
-                "联系人分类",
-                True,
-                "{} 个联系人；对象「{}」聊天风格已更新".format(
-                    contact_registry.count(),
-                    contact_registry.get_display_name(pw),
-                ),
-            ))
-        except Exception as e:
-            logger.warning("Contact registry build failed: %s", e)
-            runner.update(DS("联系人分类", False, "联系人分类失败: {}".format(e)))
-
-    # 检查关键文件是否生成成功
-    _critical_missing = []
-    for _cf_label, _cf_path in [
-        ("思维模型", "data/thinking_model.txt"),
-        ("认知参数", "data/cognitive_profile.json"),
-        ("情绪边界", "data/emotion_boundaries.json"),
-        ("情绪表达", "data/emotion_expression.json"),
-    ]:
-        if not Path(_cf_path).exists() or Path(_cf_path).stat().st_size < 50:
-            _critical_missing.append(_cf_label)
-
-    if _critical_missing:
-        runner.add(DS("训练未完成", False,
-                       "以下关键步骤因 API 错误未完成：{}。请检查 API 后重新训练。".format("、".join(_critical_missing))))
-        runner.error = "关键步骤失败: " + "、".join(_critical_missing)
-    elif skipped:
-        runner.add(DS("学习完成", True, "跳过 {} 个已完成步骤 ⏩".format(skipped)))
-    else:
-        runner.add(DS("学习完成", True, "所有步骤完成，请前往「校准」进一步校准"))
+        runner.error = msg
 
 
 def run_step3_decrypt_and_train():
@@ -1963,12 +1577,21 @@ def link_external_dir(path_str: str):
 # ---------------------------------------------------------------------------
 
 def _import_pipeline(runner):
-    """Full import + train pipeline. Runs in a background thread."""
-    from src.personality.prompt_builder import PromptBuilder
+    """Full import + train pipeline. Runs in a background thread.
+
+    Delegates the core steps to TrainingPipeline so they are shared with
+    _step3_pipeline (the decrypt + train variant).
+    """
+    global contact_registry
+    from src.data.decrypt import DecryptStep as DS
+    from src.engine.training import set_contact_registry
 
     c = components
     config = c["config"]
+    output_dir = config["paths"].get("raw_db_dir", "data/raw")
+    set_contact_registry(contact_registry)
 
+    # Read messages directly (no decrypt step needed — DB already decrypted)
     runner.add("⏳ 读取微信数据库…")
     messages = c["parser"].get_all_text_messages()
     if not messages:
@@ -1976,6 +1599,7 @@ def _import_pipeline(runner):
         return
     runner.update("✓ 读取消息: {:,} 条".format(len(messages)))
 
+    # Construct pipeline with messages already loaded
     from src.data.partner_config import load_partner_wxid, load_twin_mode
     pw = load_partner_wxid().strip()
     if not pw:
@@ -1985,382 +1609,29 @@ def _import_pipeline(runner):
     twin_label = "自己" if twin_mode == "self" else "对象"
     runner.add("ℹ️ 训练模式：训练 **{}** 的分身".format(twin_label))
 
-    runner.add("⏳ 数据清洗…")
-    cleaned_all = c["cleaner"].clean_messages(messages)
-    cleaned = [m for m in cleaned_all if m.get("StrTalker") == pw]
-    if len(cleaned) < PARTNER_MIN_TRAIN_MESSAGES:
-        runner.update(
-            "⚠️ 与对象的清洗后消息仅 {:,} 条（至少需要 {} 条），请确认选对人。".format(
-                len(cleaned), PARTNER_MIN_TRAIN_MESSAGES,
-            )
-        )
-        return
-    cs = c["cleaner"].last_stats
-    runner.update(
-        "✓ 清洗: 全库 {:,} 条 → **仅对象** {:,} 条（非对象 {:,} 条已排除）".format(
-            len(cleaned_all), len(cleaned), len(cleaned_all) - len(cleaned),
-        )
-    )
-    if cs:
-        parts = []
-        if cs.dropped_binary:
-            parts.append("二进制{}".format(cs.dropped_binary))
-        if cs.dropped_system:
-            parts.append("系统消息{}".format(cs.dropped_system))
-        if cs.dropped_pure_emoji:
-            parts.append("纯表情{}".format(cs.dropped_pure_emoji))
-        if cs.dropped_pure_url:
-            parts.append("纯链接{}".format(cs.dropped_pure_url))
-        if cs.dropped_too_short:
-            parts.append("过短{}".format(cs.dropped_too_short))
-        if cs.stripped_wxid_prefix:
-            parts.append("群聊wxid前缀清除{}".format(cs.stripped_wxid_prefix))
-        if cs.redacted_pii:
-            parts.append("PII脱敏{}".format(cs.redacted_pii))
-        if parts:
-            runner.add("  └ {}".format("、".join(parts)))
+    pipeline = TrainingPipeline(c, contact_registry=contact_registry)
 
-    runner.add("⏳ 构建对话段…")
-    c["builder"].twin_mode = twin_mode
-    conversations = c["builder"].build_conversations(cleaned)
-    for conv in conversations:
-        conv["turn_count"] = len(conv.get("turns", []))
-    runner.update("✓ 对话段: {:,} 段（{} 侧为主角）".format(len(conversations), twin_label))
+    # Feed pre-read messages into the pipeline's state
+    pipeline._messages = messages
 
-    # --- checkpoint detection ---
-    db_mt = _get_db_mtime(config)
-    skipped = 0
-
-    # --- 人格分析 ---
-    persona_path = Path(config["paths"]["persona_file"])
-    _needs_regen3 = not _ckpt_valid(persona_path, db_mt)
-    if not _needs_regen3:
-        profile = yaml.safe_load(open(persona_path, encoding="utf-8"))
-        if not profile.get("vocab_bank"):
-            _needs_regen3 = True
-    if not _needs_regen3:
-        runner.add("⏩ 人格画像已存在，跳过")
-        skipped += 1
-    else:
-        runner.add("⏳ 分析人格特征（{} 侧）…".format(twin_label))
-        profile = _timed(runner, lambda: c["analyzer"].analyze(cleaned, twin_mode=twin_mode),
-                         lambda e: "⏳ 分析人格特征… 已等待 {}s".format(e))
-        persona_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(persona_path, "w", encoding="utf-8") as f:
-            yaml.dump(profile, f, allow_unicode=True)
-        runner.update("✓ 人格画像已保存（含词库）")
-
-    # --- 情绪训练 ---
-    from src.personality.emotion_analyzer import EmotionAnalyzer as _EA2
-    from src.personality.emotion_tracker import EmotionTracker as _ET2
-    emo_path = Path(config["paths"].get("emotion_file", "data/emotion_profile.yaml"))
-    if _ckpt_valid(emo_path, db_mt):
-        emo_p = yaml.safe_load(open(emo_path, encoding="utf-8"))
-        runner.add("⏩ 情绪模型已存在，跳过")
-        skipped += 1
-    else:
-        runner.add("⏳ 训练情绪模型（{} 侧）…".format(twin_label))
-        emo_a = _EA2()
-        emo_p = _timed(runner, lambda: emo_a.train(cleaned, twin_mode=twin_mode),
-                       lambda e: "⏳ 训练情绪模型… 已等待 {}s".format(e))
-        emo_a.save(str(emo_path))
-        emo_dist = emo_p.get("emotion_distribution", {})
-        emo_sorted2 = sorted(emo_dist.items(), key=lambda x: -x[1])
-        runner.update("✓ 情绪模型已训练，{}种情绪 ({})".format(
-            len(emo_sorted2),
-            ", ".join("{}:{}".format(k, v) for k, v in emo_sorted2),
-        ))
-    _api_cfg2 = config.get("api", {})
-    from openai import OpenAI as _OAI_emo2
-    _emo_cl2 = _OAI_emo2(
-        api_key=_api_cfg2.get("api_key", ""),
-        base_url=_api_cfg2.get("base_url"),
-        default_headers=_api_cfg2.get("headers", {}),
-    )
-    c["emotion_tracker"] = _ET2(emo_p, api_client=_emo_cl2, model=_api_cfg2.get("model", "gpt-4o"))
-
-    # --- 思维训练 ---
-    think_path = Path(config["paths"].get("thinking_model_file", "data/thinking_model.txt"))
-    if _ckpt_valid(think_path, db_mt):
-        _thinking2 = think_path.read_text(encoding="utf-8")
-        runner.add("⏩ 思维模型已存在（{} 字），跳过".format(len(_thinking2)))
-        skipped += 1
-    else:
-        runner.add("⏳ 训练思维模型（约 3-5 分钟）…")
-        try:
-            from src.personality.thinking_profiler import ThinkingProfiler as _TP2
-            api_cfg = config.get("api", {})
-            from openai import OpenAI as _OAI2
-            _tp2_client = _OAI2(
-                api_key=api_cfg.get("api_key", ""),
-                base_url=api_cfg.get("base_url"),
-                default_headers=api_cfg.get("headers", {}),
-            )
-            tp2 = _TP2(_tp2_client, api_cfg.get("model", "gpt-4o"))
-            _thinking2 = _retry_api(
-                lambda: _timed(runner, lambda: tp2.train(conversations),
-                                lambda e: "⏳ 训练思维模型… 已等待 {}s".format(e)),
-                runner, "⚠ 思维训练",
-            )
-            _thinking2 = _thinking2 or ""
-            tp2.save(_thinking2, str(think_path))
-            runner.update("✓ 思维模型已训练（{} 字，数据驱动）".format(len(_thinking2)))
-        except Exception as e:
-            logger.warning("Thinking profiler training failed: %s", e)
-            _thinking2 = ""
-            runner.update("⚠ 思维训练失败: {}".format(e))
-
-    # --- 认知参数提取 ---
-    _cog_profile2 = {}
-    _cog_path2 = Path("data/cognitive_profile.json")
-    _s3_api = config.get("api", {})
-    if _ckpt_valid(_cog_path2, db_mt):
-        from src.personality.thinking_profiler import ThinkingProfiler as _TP2_cog
-        _cog_profile2 = _TP2_cog.load_cognitive_profile()
-        runner.add("⏩ 认知参数已存在，跳过")
-        skipped += 1
-    else:
-        try:
-            from src.personality.thinking_profiler import ThinkingProfiler as _TP2_cog
-            runner.add("⏳ 提取认知风格参数…")
-            from openai import OpenAI as _OAI_cog2
-            _cog_cl2 = _OAI_cog2(
-                api_key=_s3_api.get("api_key", ""),
-                base_url=_s3_api.get("base_url"),
-                default_headers=_s3_api.get("headers", {}),
-            )
-            _tp2_cog = _TP2_cog(_cog_cl2, _s3_api.get("model", "gpt-4o"))
-            _cog_profile2 = _retry_api(
-                lambda: _timed(runner, lambda: _tp2_cog.extract_cognitive_profile(conversations),
-                               lambda e: "⏳ 认知参数提取… 已等待 {}s".format(e)),
-                runner, "⚠ 认知参数",
-            )
-            _cog_profile2 = _cog_profile2 or {}
-            if _cog_profile2:
-                _TP2_cog.save_cognitive_profile(_cog_profile2)
-                runner.update("✓ 认知参数已提取")
-            else:
-                runner.update("⚠ 认知参数数据不足，跳过")
-        except Exception as e:
-            logger.warning("Cognitive profile extraction failed: %s", e)
-            runner.update("⚠ 认知参数提取失败: {}".format(e))
-
-    # --- 情绪边界提取 ---
-    _emo_boundaries2 = []
-    _eb_path2 = Path("data/emotion_boundaries.json")
-    _s3_api_eb = config.get("api", {})
-    if _ckpt_valid(_eb_path2, db_mt):
-        from src.personality.thinking_profiler import ThinkingProfiler as _TP3_eb
-        _emo_boundaries2 = _TP3_eb.load_emotion_boundaries()
-        _n_cached2 = sum(len(v) for v in _emo_boundaries2.values()) if isinstance(_emo_boundaries2, dict) else len(_emo_boundaries2)
-        runner.add("⏩ 情绪边界已存在（{} 条），跳过".format(_n_cached2))
-        skipped += 1
-    else:
-        try:
-            from src.personality.thinking_profiler import ThinkingProfiler as _TP3_eb
-            runner.add("⏳ 提取情绪反应边界…")
-            from openai import OpenAI as _OAI_eb3
-            _eb_cl3 = _OAI_eb3(
-                api_key=_s3_api_eb.get("api_key", ""),
-                base_url=_s3_api_eb.get("base_url"),
-                default_headers=_s3_api_eb.get("headers", {}),
-            )
-            _tp3_eb = _TP3_eb(_eb_cl3, _s3_api_eb.get("model", "gpt-4o"))
-            import src.app as _self_mod3
-            _cr3 = getattr(_self_mod3, 'contact_registry', None)
-            _emo_boundaries2 = _retry_api(
-                lambda: _timed(runner, lambda: _tp3_eb.extract_emotion_boundaries(conversations, contact_registry=_cr3),
-                               lambda e: "⏳ 情绪边界提取… 已等待 {}s".format(e)),
-                runner, "⚠ 情绪边界",
-            )
-            _emo_boundaries2 = _emo_boundaries2 or {}
-            if _emo_boundaries2:
-                _TP3_eb.save_emotion_boundaries(_emo_boundaries2)
-                _n_eb2 = sum(len(v) for v in _emo_boundaries2.values()) if isinstance(_emo_boundaries2, dict) else len(_emo_boundaries2)
-                runner.update("✓ 情绪边界已提取（{} 条）".format(_n_eb2))
-            else:
-                runner.update("⚠ 情绪边界数据不足，跳过")
-        except Exception as e:
-            logger.warning("Emotion boundary extraction failed: %s", e)
-            runner.update("⚠ 情绪边界提取失败: {}".format(e))
-
-    # --- 情绪表达风格提取 ---
-    _emo_expression2 = {}
-    _expr_path2 = Path("data/emotion_expression.json")
-    _s3_api_expr = config.get("api", {})
-    if _ckpt_valid(_expr_path2, db_mt):
-        from src.personality.thinking_profiler import ThinkingProfiler as _TP3_expr
-        _emo_expression2 = _TP3_expr.load_emotion_expression()
-        runner.add("⏩ 情绪表达风格已存在（{} 种），跳过".format(len(_emo_expression2)))
-        skipped += 1
-    else:
-        try:
-            from src.personality.thinking_profiler import ThinkingProfiler as _TP3_expr
-            runner.add("⏳ 提取情绪表达风格…")
-            from openai import OpenAI as _OAI_expr3
-            _expr_cl3 = _OAI_expr3(
-                api_key=_s3_api_expr.get("api_key", ""),
-                base_url=_s3_api_expr.get("base_url"),
-                default_headers=_s3_api_expr.get("headers", {}),
-            )
-            _tp3_expr = _TP3_expr(_expr_cl3, _s3_api_expr.get("model", "gpt-4o"))
-            _emo_expression2 = _retry_api(
-                lambda: _timed(runner, lambda: _tp3_expr.extract_emotion_expression_style(conversations),
-                               lambda e: "⏳ 情绪表达提取… 已等待 {}s".format(e)),
-                runner, "⚠ 情绪表达",
-            )
-            _emo_expression2 = _emo_expression2 or {}
-            if _emo_expression2:
-                _TP3_expr.save_emotion_expression(_emo_expression2)
-                runner.update("✓ 情绪表达风格已提取（{} 种）".format(len(_emo_expression2)))
-            else:
-                runner.update("⚠ 情绪表达数据不足，跳过")
-        except Exception as e:
-            logger.warning("Emotion expression extraction failed: %s", e)
-            runner.update("⚠ 情绪表达提取失败: {}".format(e))
-
-    c["prompt_builder"] = PromptBuilder(
-        persona_profile=profile,
-        cold_start_description=config.get("cold_start_description", ""),
-        thinking_model=_thinking2,
-        cognitive_profile=_cog_profile2,
-        emotion_boundaries=_emo_boundaries2,
-        emotion_expression=_emo_expression2,
-    )
-    c["prompt_builder"].regenerate_guidance()
-    runner.update("✓ 指引文件已生成")
-    c["chat_engine"].set_components(
-        c["retriever"], c["belief_graph"], c["prompt_builder"],
-        c["vector_store"], c["emotion_tracker"],
-        memory_bank=c.get("memory_bank"),
+    success, msg = pipeline.run_full(
+        db_path=output_dir,
+        wxid="",
+        partner_wxid=pw,
+        components=c,
+        use_twin_mode=(twin_mode == "self"),
+        runner=runner,
+        skip_steps=2,  # Steps 1 (decrypt) and 2 (parse) already done — DB already decrypted
     )
 
-    # --- 嵌入模型检测 ---
-    _emb2 = c["embedder"]
-    if _emb2.is_model_cached():
-        runner.add("✓ 嵌入模型已就绪")
+    if success:
+        skipped = pipeline._skipped
+        if skipped:
+            runner.add("\n🎉 学习完成！跳过了 {} 个已完成步骤 ⏩".format(skipped))
+        else:
+            runner.add("\n🎉 学习完成！所有步骤已成功。")
     else:
-        runner.add("⏳ 首次使用，正在下载嵌入模型（约 1-2GB）…")
-        try:
-            _timed(runner, lambda: _emb2.download_model(),
-                   lambda e: "⏳ 下载嵌入模型… 已等待 {}s".format(e))
-            runner.update("✓ 嵌入模型下载完成")
-        except Exception as e:
-            runner.update("⚠ 嵌入模型下载失败: {}，请检查网络连接".format(e))
-            return
-
-    # --- 向量化 ---
-    vec_count = c["vector_store"].count()
-    chroma_sqlite = Path(config["paths"]["chroma_dir"]) / "chroma.sqlite3"
-    if vec_count > 0 and _ckpt_valid(chroma_sqlite, db_mt, min_size=1000):
-        runner.add("⏩ 向量库已有 {:,} 段，跳过".format(vec_count))
-        skipped += 1
-    else:
-        runner.add("⏳ 向量化写入…")
-        try:
-            _timed(runner, lambda: c["vector_store"].add_conversations(conversations, c["embedder"]),
-                   lambda e: "⏳ 向量化写入… 已等待 {}s".format(e))
-            runner.update("✓ 向量库: {:,} 段".format(c["vector_store"].count()))
-        except Exception as e:
-            runner.update("⚠ 向量化失败: {}".format(e))
-
-    # --- 信念图谱 ---
-    bg = c["belief_graph"]
-    beliefs_path = Path(config["paths"]["beliefs_file"])
-    if bg.count() > 0 and _ckpt_valid(beliefs_path, db_mt, min_size=100):
-        runner.add("⏩ 信念图谱已有 {} 条，跳过".format(bg.count()))
-        skipped += 1
-    else:
-        runner.add("⏳ 重建信念图谱（约 1-2 分钟）…")
-        old_count = bg.count()
-        bg.beliefs.clear()
-        bg.contradictions.clear()
-        bg._embeddings.clear()
-        bg._next_id = 1
-        bg.save()
-        ll = c["learning_loop"]
-        try:
-            _timed(runner, lambda: ll.batch_extract_beliefs(conversations, top_n_contacts=1, samples_per_contact=20),
-                   lambda e: "⏳ 重建信念图谱… 已等待 {}s（当前 {} 条）".format(e, bg.count()))
-            runner.update("✓ 信念图谱已重建: {} → {} 条（从对话数据提取）".format(old_count, bg.count()))
-        except Exception as e:
-            logger.warning("Belief extraction failed: %s", e)
-            runner.update("⚠ 信念图谱重建失败: {}".format(e))
-
-    # --- 记忆提取 ---
-    mb = c.get("memory_bank")
-    if mb is None:
-        from src.memory.memory_bank import MemoryBank
-        mb = MemoryBank(filepath="data/memories.json", embedder=c["embedder"])
-        c["memory_bank"] = mb
-    mem_path = Path("data/memories.json")
-    if mb.count() > 0 and _ckpt_valid(mem_path, db_mt, min_size=10):
-        high_conf = sum(1 for m in mb.memories if m.confidence >= 0.7)
-        runner.add("⏩ 记忆库已有 {} 条（高置信 {} 条），跳过".format(mb.count(), high_conf))
-        skipped += 1
-    else:
-        runner.add("⏳ 提取记忆（约 1-2 分钟）…")
-        try:
-            mb.clear()
-            _api_mb = config.get("api", {})
-            from openai import OpenAI as _OAI_mb
-            _mb_client = _OAI_mb(
-                api_key=_api_mb.get("api_key", ""),
-                base_url=_api_mb.get("base_url"),
-                default_headers=_api_mb.get("headers", {}),
-            )
-            _timed(runner, lambda: mb.batch_extract(conversations, _mb_client, _api_mb.get("model", "gpt-4o")),
-                   lambda e: "⏳ 提取记忆… 已等待 {}s（当前 {} 条）".format(e, mb.count()))
-            high_conf = sum(1 for m in mb.memories if m.confidence >= 0.7)
-            runner.update("✓ 记忆库: {} 条（高置信 {} 条）".format(mb.count(), high_conf))
-        except Exception as e:
-            logger.warning("Memory extraction failed: %s", e)
-            runner.update("⚠ 记忆提取失败: {}".format(e))
-
-    # --- 联系人分类 ---
-    contacts_path = Path("data/contacts.json")
-    if _ckpt_valid(contacts_path, db_mt, min_size=10):
-        runner.add("⏩ 联系人数据已存在，跳过")
-        skipped += 1
-    else:
-        runner.add("⏳ 更新联系人库与对象聊天风格…")
-        try:
-            if contact_registry is None:
-                from src.data.contact_registry import ContactRegistry
-                contact_registry = ContactRegistry()
-            contacts_db = c["parser"].get_contacts()
-            contact_registry.build_from_messages(messages, contacts_db)
-            if pw in contact_registry.contacts:
-                style = c["analyzer"].analyze_per_contact(cleaned, pw)
-                if style:
-                    contact_registry.set_chat_style(pw, style)
-            runner.update(
-                "✓ 联系人: {} 个；对象「{}」聊天风格已更新".format(
-                    contact_registry.count(),
-                    contact_registry.get_display_name(pw),
-                )
-            )
-        except Exception as e:
-            logger.warning("Contact registry build failed: %s", e)
-            runner.update("⚠ 联系人分类失败: {}".format(e))
-
-    _critical_missing2 = []
-    for _cf_label, _cf_path in [
-        ("思维模型", "data/thinking_model.txt"),
-        ("认知参数", "data/cognitive_profile.json"),
-        ("情绪边界", "data/emotion_boundaries.json"),
-        ("情绪表达", "data/emotion_expression.json"),
-    ]:
-        if not Path(_cf_path).exists() or Path(_cf_path).stat().st_size < 50:
-            _critical_missing2.append(_cf_label)
-
-    if _critical_missing2:
-        runner.add("\n⚠️ 训练未完成！以下关键步骤因 API 错误未成功：{}。请检查 API 后重新训练。".format("、".join(_critical_missing2)))
-        runner.error = "关键步骤失败: " + "、".join(_critical_missing2)
-    elif skipped:
-        runner.add("\n🎉 学习完成！跳过了 {} 个已完成步骤 ⏩".format(skipped))
-    else:
-        runner.add("\n🎉 学习完成！所有步骤已成功。")
+        runner.error = msg
 
 
 def import_data():

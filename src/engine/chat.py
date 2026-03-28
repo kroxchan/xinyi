@@ -14,38 +14,9 @@ from src.memory.memory_bank import MemoryBank
 from src.belief.graph import BeliefGraph
 from src.personality.prompt_builder import PromptBuilder
 from src.personality.emotion_tracker import EmotionTracker
+from src.prompt_registry import INNER_THINK_PROMPT
 
 logger = logging.getLogger(__name__)
-
-INNER_THINK_PROMPT = (
-    "你是一个认知模拟器。模拟「我」收到消息后的第一反应——直觉、情绪、内心OS。\n"
-    "不是回复对方，是模拟我脑子里闪过的念头。\n"
-    "\n"
-    "## 我的人格\n{personality}\n"
-    "\n"
-    "## 认知参数\n{cognitive_profile}\n"
-    "\n"
-    "## 我面对「{relationship_type}」时的情绪反应模式\n{emotion_boundaries}\n"
-    "\n"
-    "关系：{relationship}\n"
-    "我上一轮情绪：{prev_emotion}\n"
-    "\n"
-    "最近对话：\n{history}\n"
-    "\n"
-    "对方发的：「{message}」\n"
-    "\n"
-    "只输出JSON：\n"
-    '{{'
-    '\n  "their_emotion": "对方的情绪(joy/excitement/touched/gratitude/pride/sadness/anger/anxiety/disappointment/wronged/coquettish/jealousy/heartache/longing/curiosity/neutral)",'
-    '\n  "my_feeling": "我的情绪(joy/excitement/touched/gratitude/pride/sadness/anger/anxiety/disappointment/wronged/coquettish/jealousy/heartache/longing/curiosity/neutral)",'
-    '\n  "feeling_intensity": 0.0到1.0,'
-    '\n  "my_thought": "我脑子里冒出的第一个念头（口语化，10-20字）"'
-    '\n}}\n'
-    "\n"
-    "要求：\n"
-    "- 严格参考上面针对当前关系类型的「情绪反应模式」来判断情绪\n"
-    "- my_thought 是第一反应，不是分析。像「卧槽」「笑死」「烦死了」「啥意思」这种\n"
-)
 
 VALID_EMOTIONS = {
     "joy", "excitement", "touched", "gratitude", "pride",
@@ -203,6 +174,8 @@ class ChatEngine:
         return self.chat(message, chat_history=[], contact_wxid=None, contact_context=None)
 
     def _get_few_shot_examples(self, contact_wxid: str | None = None) -> list[str]:
+        # Timeout: called from the parallel _do_retrieve() thread, bounded by
+        # retrieve_future.result(timeout=20). Falls back to [] on any failure.
         if not self.vector_store:
             return []
         try:
@@ -218,6 +191,8 @@ class ChatEngine:
 
     def _resolve_emotion_boundaries(self, rel_type: str) -> str:
         """Load emotion boundaries for the given relationship type, fallback to default."""
+        # Timeout: called from the parallel _do_retrieve() thread, bounded by
+        # retrieve_future.result(timeout=20). Falls back to safe defaults on failure.
         if not self.prompt_builder:
             return "（暂无数据，使用直觉判断）"
         eb = self.prompt_builder.emotion_boundaries
@@ -378,7 +353,7 @@ class ChatEngine:
             except Exception:
                 logger.warning("Inner think: error (attempt %d/%d)", attempt + 1, max_retries, exc_info=True)
                 continue
-        logger.error("Inner think: all %d attempts failed", max_retries)
+        logger.error("Inner think: all %d attempts failed", max_retries, exc_info=True)
         return None
 
     @staticmethod
@@ -422,8 +397,8 @@ class ChatEngine:
                 raw = resp.content[0].text
                 return self._clean_reply(raw)
 
-        except Exception as e:
-            logger.exception("LLM 调用失败")
-            return f"抱歉，回复生成失败：{e}"
+        except Exception:
+            logger.warning("LLM 调用失败", exc_info=True)
+            return "抱歉，回复生成失败，请稍后重试。如果问题持续，请检查网络或 API 配置。"
 
         return "不支持的 API 提供商"

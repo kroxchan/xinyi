@@ -8,6 +8,9 @@ from __future__ import annotations
 import gradio as gr
 from pathlib import Path
 import yaml
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # ==============================================================================
@@ -86,7 +89,8 @@ def _persona_dropdown_choices() -> list[tuple[str, str]]:
     """Return (label, value) pairs for persona dropdown."""
     persona_mgr = _get_persona_mgr()
     if persona_mgr is None:
-        return []
+        logger.debug("persona_mgr not initialized, returning placeholder choice")
+        return [("系统未初始化", "")]
     items = persona_mgr.list_personas()
     choices = []
     for p in items:
@@ -173,7 +177,14 @@ def _build_relationship_html() -> str:
     """Render relationship distribution from contact registry."""
     contact_registry = _get_contact_registry()
     if contact_registry is None or contact_registry.count() == 0:
-        return "<p style='text-align:center;opacity:.5'>联系人数据未导入</p>"
+        logger.debug("contact_registry empty or not initialized, showing info message")
+        return (
+            "<div style='padding:16px;background:#e0f2fe;border-radius:8px;"
+            "border-left:4px solid #0ea5e9;margin:8px 0'>"
+            "<b style='color:#075985'>ℹ️ 暂无联系人数据</b><br>"
+            "<span style='color:#0c4a6e;font-size:.9em'>导入联系人后即可查看关系分布</span>"
+            "</div>"
+        )
     from src.data.contact_registry import RELATIONSHIP_LABELS
     from collections import Counter
     rel_counts: Counter = Counter()
@@ -189,7 +200,14 @@ def _build_belief_summary_html() -> str:
     """Render belief graph summary."""
     components = _get_components()
     if components is None:
-        return ""
+        logger.warning("components not initialized, cannot build belief summary")
+        return (
+            "<div style='padding:16px;background:#fef3c7;border-radius:8px;"
+            "border-left:4px solid #f59e0b;margin:8px 0'>"
+            "<b style='color:#92400e'>⚠️ 系统未初始化</b><br>"
+            "<span style='color:#78350f;font-size:.9em'>请等待模块加载完成后再查看信念图谱</span>"
+            "</div>"
+        )
     bg = components["belief_graph"]
     all_beliefs = bg.query_all() if hasattr(bg, "query_all") else []
     if not all_beliefs:
@@ -231,7 +249,14 @@ def _build_persona_html() -> str:
     """Render persona profile HTML."""
     components = _get_components()
     if components is None:
-        return ""
+        logger.warning("components not initialized, cannot build persona HTML")
+        return (
+            "<div style='padding:16px;background:#fef3c7;border-radius:8px;"
+            "border-left:4px solid #f59e0b;margin:8px 0'>"
+            "<b style='color:#92400e'>⚠️ 系统未初始化</b><br>"
+            "<span style='color:#78350f;font-size:.9em'>请等待模块加载完成后再查看人格画像</span>"
+            "</div>"
+        )
     config = components["config"]
     persona_path = Path(config["paths"]["persona_file"])
     if not persona_path.exists():

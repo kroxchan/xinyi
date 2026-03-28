@@ -84,14 +84,74 @@ def setup_logging(
     )
 
     # Suppress noisy third-party loggers
-    for noisy in ("httpx", "openai", "chromadb", "urllib3", "sentence_transformers"):
+    for noisy in (
+        "httpx",
+        "openai",
+        "chromadb",
+        "urllib3",
+        "sentence_transformers",
+        "gradio",
+        "gradio_server",
+        "jieba",
+        "uvicorn",
+    ):
         logger.disable(noisy)
 
+    # Sync loguru handlers to standard logging so that modules using
+    # logging.getLogger(__name__) get the same output as loguru loggers
+    _sync_loguru_to_standard_logging(log_level)
 
-def get_logger(name: str) -> "logger":
-    """Return a loguru logger for the given module name."""
-    try:
-        from loguru import logger as _logger
-        return _logger
-    except ImportError:
-        return logging.getLogger(name)
+
+def _sync_loguru_to_standard_logging(log_level: str) -> None:
+    """Mirror loguru's handlers into the standard logging hierarchy.
+
+    This lets modules that call logging.getLogger(__name__) directly
+    produce output through the same sinks (console + file) that loguru uses,
+    with identical formatting.
+    """
+    root = logging.getLogger()
+    if root.handlers:  # already synced
+        return
+
+    class _LoguruHandler(logging.Handler):
+        """Bridge that re-emits standard log records into loguru."""
+
+        def __init__(self, level: int) -> None:
+            super().__init__(level=level)
+            self._loguru = None
+
+        def emit(self, record: logging.LogRecord) -> None:
+            if self._loguru is None:
+                from loguru import logger as _loguru
+
+                self._loguru = _loguru
+            try:
+                self._loguru.log(
+                    record.levelname,
+                    self.format(record),
+                )
+            except Exception:
+                self.handleError(record)
+
+    handler = _LoguruHandler(getattr(logging, log_level.upper(), logging.INFO))
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+
+
+def get_logger(name: str) -> logging.Logger:
+    """Return a standard-library logger that streams through loguru's sinks.
+
+    Unlike returning the global loguru logger (which ignores the ``name``
+    argument and always attributes records to loguru internals), this returns
+    a regular ``logging.Logger`` tied to the standard logging hierarchy.  Its
+    messages are re-routed through a custom handler into loguru, so every
+    logger benefitting from ``setup_logging()`` gets the same console and file
+    output with the same formatting.
+    """
+    return logging.getLogger(name)

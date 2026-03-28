@@ -25,6 +25,7 @@ data/sessions/
 data/advisor_sessions/
 data/personas/
 data/guidance/
+data/twin_workspace/
 data/.training_status.json
 
 # vendor 运行时产物

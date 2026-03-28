@@ -19,6 +19,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from src.prompt_registry import digest_prompt
+
 logger = logging.getLogger(__name__)
 
 DIGEST_CACHE_PATH = Path("data/mediation_digest.json")
@@ -98,20 +100,6 @@ ADVISOR_PROMPT_SELF = """\
 - 「作为」「首先其次」，markdown，列点
 - 突然变得很文艺或很深沉
 """
-
-DIGEST_PROMPT = """\
-你是一位亲密关系分析师。请根据以下聊天数据，写一份简洁的关系动态画像。
-
-要求：
-- 300 字以内
-- 用要点形式
-- 重点关注：双方各自的沟通习惯、容易起冲突的场景、情绪触发模式、关系中的积极面
-- 写给一位即将接手这对来访者的咨询师看
-
-数据：
-{raw_context}
-"""
-
 
 class AdvisorSession:
     __slots__ = ("id", "title", "created_at", "updated_at", "messages",
@@ -483,7 +471,7 @@ class PartnerAdvisor:
         return [t for _, t in scored[:n]]
 
     def _compress_to_digest(self, raw_context: str) -> str:
-        prompt = DIGEST_PROMPT.format(raw_context=raw_context[:6000])
+        prompt = digest_prompt(raw_context[:6000])
         try:
             resp = self.client.chat.completions.create(
                 model=self.model,
