@@ -103,7 +103,7 @@ jobs:
           name: xinyi v1.0.1
           draft: false
           prerelease: false
-          overwrite: true
+          overwrite_files: true
           body: |
             xinyi v1.0.1 正式发布
 
@@ -138,7 +138,7 @@ jobs:
           name: xinyi v1.0.1
           draft: false
           prerelease: false
-          overwrite: true
+          overwrite_files: true
           body: |
             xinyi v1.0.1 正式发布
 
