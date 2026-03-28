@@ -1,13 +1,12 @@
-name: Build Release Packages
+# Build Release Packages
 
 on:
   push:
     tags:
-      - "v*"          # 推送 v1.0.0 等 tag 时触发
-  workflow_dispatch:    # 也支持手动触发
+      - "v*"
+  workflow_dispatch:
 
 jobs:
-  # ── macOS .app ───────────────────────────────────────────
   build-macos:
     name: Build macOS
     runs-on: macos-latest
@@ -35,7 +34,6 @@ jobs:
           path: xinyi-macos.zip
           retention-days: 30
 
-  # ── Windows .exe ────────────────────────────────────────
   build-windows:
     name: Build Windows
     runs-on: windows-latest
@@ -64,12 +62,10 @@ jobs:
           path: xinyi-windows.zip
           retention-days: 30
 
-  # ── Release ──────────────────────────────────────────────
   create-release:
     name: Create GitHub Release
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     steps:
@@ -83,7 +79,34 @@ jobs:
       - name: Display structure
         run: ls -R artifacts/
 
-      - name: Create Release
+      - name: Determine release mode
+        id: release_mode
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "mode=tag" >> $GITHUB_OUTPUT
+            echo "tag_name=${{ github.ref }}" >> $GITHUB_OUTPUT
+          else
+            echo "mode=dispatch" >> $GITHUB_OUTPUT
+            echo "tag_name=v1.0.0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload to Release (dispatch mode - overwrite v1.0.0)
+        if: steps.release_mode.outputs.mode == 'dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: xinyi v1.0.0
+          draft: false
+          prerelease: false
+          overwrite: true
+          files: |
+            artifacts/xinyi-macos/xinyi-macos.zip
+            artifacts/xinyi-windows/xinyi-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release (tag mode - new release)
+        if: steps.release_mode.outputs.mode == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref }}
