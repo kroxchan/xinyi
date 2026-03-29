@@ -7,11 +7,12 @@ from pathlib import Path
 import gradio as gr
 
 from src.features.cooldown import ConflictCooldownManager as _CCM
+from src.ui.ux_helpers import UXHelper
 
 _logger = logging.getLogger(__name__)
 
 
-def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None):
+def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None, demo=None):
     log = logger or _logger
     from src.engine.partner_advisor import (
         PartnerAdvisor,
@@ -339,6 +340,11 @@ def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None):
                 _slot_outputs.append(_slot_del_btns[_i])
 
         with gr.Column(scale=3, elem_id="chat-area", elem_classes=["main-chat-panel"]):
+            # 思考动画（在 chatbot 上方）
+            thinking_indicator = gr.HTML(
+                value="",
+                elem_id="thinking-indicator",
+            )
             chatbot = gr.Chatbot(
                 height=520,
                 type="messages",
@@ -537,8 +543,10 @@ def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None):
                     _render_cooldown_ui(),
                 ) + _adv_refresh_all(session_id)
 
-            # 在获取情绪状态后检查是否需要触发冷却
-            # 先进行对话获取情绪
+            # 显示思考动画
+            yield "", chatbot_history, session_id, gr.update(), UXHelper.thinking_visible(True), _render_cooldown_ui()
+            _chat_history = chatbot_history or []
+
             cooldown_prompt = _cooldown_mgr.get_cooldown_prompt()
             bubbles = advisor.chat(user_msg.strip(), s, cooldown_prompt=cooldown_prompt)
 
@@ -548,7 +556,6 @@ def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None):
                 conf = advisor.emotion_tracker.confidence
                 triggered = _cooldown_mgr.check_and_trigger(emo, conf)
                 if triggered:
-                    # 新冷却触发：添加引导消息
                     ui_msg = _cooldown_mgr.get_ui_message()
                     if ui_msg:
                         s.add_message("assistant", f"💭 *{ui_msg}*")
@@ -559,30 +566,203 @@ def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None):
         s.auto_title()
         _adv_mgr.save(s)
 
-        # 返回更新的冷却状态 UI
         cooldown_html_value = _render_cooldown_ui()
-        return (
+        yield (
             "",
             _adv_session_to_chatbot(s),
             session_id,
             new_twin_reply,
+            UXHelper.thinking_visible(False),
             cooldown_html_value,
+        ) + _adv_refresh_all(session_id)
+
+    def _adv_send_stream(user_msg, session_id, chatbot_history, kk_mode="💬 简短"):
+        """流式版本的 _adv_send：yield 每个回复 chunk，实时更新 UI。"""
+        # 先执行所有预检查和初始化（与原版相同）
+        if not user_msg or not user_msg.strip():
+            yield (
+                "",
+                chatbot_history,
+                session_id,
+                gr.update(),
+                gr.update(),
+                _render_cooldown_ui(),
+            ) + _adv_refresh_all(session_id)
+            return
+
+        is_xiaoan = "@KK" in user_msg
+
+        if not session_id:
+            s = _adv_mgr.create()
+            session_id = s.id
+        else:
+            s = _adv_mgr.load(session_id)
+            if s is None:
+                s = _adv_mgr.create()
+                session_id = s.id
+
+        if is_xiaoan:
+            # KK 模式暂不使用流式（单次请求，结果简短）
+            mediator = _get_mediator()
+            if mediator is None:
+                _hist = chatbot_history or []
+                _hist.append({"role": "assistant",
+                              "content": "💜 **KK**：系统未初始化，请先完成学习。"})
+                yield (
+                    "",
+                    _hist,
+                    session_id,
+                    gr.update(),
+                    gr.update(),
+                    _render_cooldown_ui(),
+                ) + _adv_refresh_all(session_id)
+                return
+
+            mode = "detailed" if kk_mode == "📖 详细" else "short"
+            mediator.set_kk_mode(mode)
+            clean_msg = user_msg.replace("@KK", "").strip() or user_msg.strip()
+            s.add_message("user", user_msg.strip())
+            mediator._ready.wait(timeout=120)
+            system = mediator._system_prompt or "你是 KK，心译的关系洞察顾问。"
+            history = []
+            for m in s.messages[:-1]:
+                c = m["content"]
+                if m["role"] == "assistant" and c.startswith("【KK】"):
+                    history.append({"role": "assistant", "content": c[4:].strip()})
+                elif m["role"] == "assistant":
+                    history.append({"role": "user", "content": f"（对象分身回复了：{c}）"})
+                else:
+                    history.append({"role": "user", "content": c.replace("@KK", "").strip()})
+            history.append({"role": "user", "content": clean_msg})
+            api_messages = [{"role": "system", "content": system}]
+            api_messages.extend(history)
+
+            try:
+                resp = mediator.client.chat.completions.create(
+                    model=mediator.model,
+                    messages=api_messages,
+                    temperature=0.85,
+                    max_tokens=500,
+                )
+                reply = (resp.choices[0].message.content or "").strip()
+            except Exception as e:
+                log.exception("Mediator LLM call failed")
+                reply = UXHelper.format_error(
+                    title="KK 回复失败",
+                    message=str(e)[:80],
+                    solution="请稍后重试，或检查 API 配置。",
+                )
+
+            s.add_message("assistant", f"【KK】{reply.strip()}")
+            s.auto_title()
+            _adv_mgr.save(s)
+            yield (
+                "",
+                _adv_session_to_chatbot(s),
+                session_id,
+                gr.update(),
+                UXHelper.thinking_visible(False),
+                _render_cooldown_ui(),
+            ) + _adv_refresh_all(session_id)
+            return
+
+        # 普通分身对话模式：使用真正的流式 API
+        advisor = _get_advisor()
+        if advisor is None:
+            _hist = chatbot_history or []
+            _hist.append({"role": "assistant", "content": "系统未初始化，请先完成训练。"})
+            yield (
+                "",
+                _hist,
+                session_id,
+                gr.update(),
+                gr.update(),
+                _render_cooldown_ui(),
+            ) + _adv_refresh_all(session_id)
+            return
+
+        _hist = chatbot_history or []
+        # 先显示思考动画
+        yield "", _hist, session_id, gr.update(), UXHelper.thinking_visible(True), _render_cooldown_ui()
+
+        # emotion tracker 同步更新（不阻塞太快）
+        try:
+            advisor._ready.wait(timeout=5)
+        except Exception:
+            pass
+
+        # 写 user message（供 history window 使用）
+        s.add_message("user", user_msg.strip())
+        accumulated = ""
+        stage_shown = False
+
+        try:
+            for chunk in advisor.chat_stream(user_msg.strip(), s):
+                accumulated += chunk
+                if not stage_shown:
+                    # 第一个 chunk 到达 → 切换为 "回复中" 阶段
+                    yield "", _hist, session_id, gr.update(), UXHelper.thinking_visible(False), _render_cooldown_ui()
+                    stage_shown = True
+                # 实时追加到 textbox（用户可看到逐字输出）
+                yield "", _hist, session_id, gr.update(), gr.update(), _render_cooldown_ui()
+        except Exception as e:
+            log.exception("Stream generator failed")
+            accumulated = UXHelper.format_error(
+                title="回复生成失败",
+                message=str(e)[:120],
+                solution="请稍后重试。",
+            )
+            stage_shown = True
+
+        # 冷却检查（仅在流式完成后）
+        if hasattr(advisor, 'emotion_tracker') and advisor.emotion_tracker:
+            emo = advisor.emotion_tracker.current_emotion
+            conf = advisor.emotion_tracker.confidence
+            triggered = _cooldown_mgr.check_and_trigger(emo, conf)
+            if triggered:
+                ui_msg = _cooldown_mgr.get_cooldown_prompt()
+                if ui_msg:
+                    s.add_message("assistant", f"💭 *{ui_msg}*")
+
+        # 分割气泡并写入 session
+        if accumulated:
+            bubbles = [ln.strip() for ln in accumulated.split("\n") if ln.strip()]
+            if not bubbles:
+                bubbles = [accumulated]
+            for b in bubbles:
+                s.add_message("assistant", b)
+            new_twin_reply = "\n".join(bubbles)
+        else:
+            new_twin_reply = ""
+
+        s.auto_title()
+        _adv_mgr.save(s)
+
+        yield (
+            "",
+            _adv_session_to_chatbot(s),
+            session_id,
+            new_twin_reply,
+            UXHelper.thinking_visible(False),
+            _render_cooldown_ui(),
         ) + _adv_refresh_all(session_id)
 
     adv_new_btn.click(
         fn=_adv_new_session,
         outputs=[_adv_state, chatbot] + _slot_outputs,
     )
+    # 流式发送：实时显示思考动画 + 流式回复
+    # outputs 增加 thinking_indicator（gr.HTML 组件）
     send_btn.click(
-        fn=_adv_send,
+        fn=_adv_send_stream,
         inputs=[msg_input, _adv_state, chatbot, kk_mode_group],
-        outputs=[msg_input, chatbot, _adv_state, _last_twin_reply, cooldown_html]
+        outputs=[msg_input, chatbot, _adv_state, _last_twin_reply, thinking_indicator, cooldown_html]
         + _slot_outputs,
     )
     msg_input.submit(
-        fn=_adv_send,
+        fn=_adv_send_stream,
         inputs=[msg_input, _adv_state, chatbot, kk_mode_group],
-        outputs=[msg_input, chatbot, _adv_state, _last_twin_reply, cooldown_html]
+        outputs=[msg_input, chatbot, _adv_state, _last_twin_reply, thinking_indicator, cooldown_html]
         + _slot_outputs,
     )
     for _si in range(_CHAT_MAX_SESSION_SLOTS):
@@ -921,7 +1101,7 @@ def render_chat_tab(components=None, is_ready=True, logger=None, blocks=None):
         outputs=align_output,
     )
 
-    return None, chatbot, _adv_state
+    return None, chatbot, _adv_state, thinking_indicator
 
 
 # 兼容旧名称

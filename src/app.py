@@ -1358,12 +1358,15 @@ def _step1_pipeline(runner):
 
 
 def run_step1_prepare():
-    """Step 1: clone repo + install deps + compile scanner. Returns (html, timer_update)."""
+    """Step 1: clone repo + install deps + compile scanner. Returns (html,).
+    
+    Timer activation is handled separately via .then() chain on the button click.
+    """
     runner = TrainingRunner.instance()
     if runner.is_running():
-        return _step_html(runner.get_steps()), gr.Timer(active=True)
+        return _step_html(runner.get_steps())
     runner.start(_step1_pipeline, render_fn=_step_html, mode="step1")
-    return '<div class="step-card step-ok">⏳ 正在准备解密工具…</div>', gr.Timer(active=True)
+    return '<div class="step-card step-ok">⏳ 正在准备解密工具…</div>'
 
 
 def _keys_has_main_message_db(keys: dict) -> bool:
@@ -1499,15 +1502,18 @@ def _decrypt_only_pipeline(runner):
 
 
 def run_step3_decrypt_only():
-    """Step 3: decrypt DBs only (no training). Returns (html, timer_update)."""
+    """Step 3: decrypt DBs only (no training). Returns (html,).
+    
+    Timer activation is handled separately via .then() chain on the button click.
+    """
     if components is None:
         from src.data.decrypt import DecryptStep as DS
-        return _step_html([DS("系统检查", False, "系统未初始化：" + str(init_error))]), gr.Timer(active=False)
+        return _step_html([DS("系统检查", False, "系统未初始化：" + str(init_error))])
     runner = TrainingRunner.instance()
     if runner.is_running():
-        return _step_html(runner.get_steps()), gr.Timer(active=True)
+        return _step_html(runner.get_steps())
     runner.start(_decrypt_only_pipeline, render_fn=_step_html, mode="step3")
-    return '<div class="step-card step-ok">⏳ 解密启动中…</div>', gr.Timer(active=True)
+    return '<div class="step-card step-ok">⏳ 解密启动中…</div>'
 
 
 def _step3_pipeline(runner):
@@ -2379,8 +2385,19 @@ def build_ui() -> gr.Blocks:
                 # -- API config --
                 gr.Markdown("---\n#### API 配置")
                 if _has_api:
-                    gr.Markdown(
-                        '<span style="color:#65a88a">✓ API 已配置完成。如需修改，可在「设置」中操作。</span>'
+                    # 显示当前配置的摘要，方便用户确认当前使用的是哪个模型/API
+                    _display_model = _md or "未指定"
+                    gr.HTML(
+                        '<div style="background:#fefcfb;border:1px solid #e6dcd8;border-radius:8px;padding:12px 16px;margin:8px 0">'
+                        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
+                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Provider</span><br><b>{_pv}</b></div>'
+                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Model</span><br><b>{_display_model}</b></div>'
+                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Base URL</span><br><code style="font-size:0.9em">{_bu or "默认"}</code></div>'
+                        '</div>'
+                        '<div style="margin-top:8px;font-size:0.85em;color:#8c7b7f">'
+                        '如需修改，请前往「设置」页面。'
+                        '</div>'
+                        '</div>'
                     )
                 else:
                     gr.Markdown("填写大模型 API 信息后保存。")
@@ -2542,7 +2559,7 @@ def build_ui() -> gr.Blocks:
                 if _has_decrypted or _has_api:
                     gr.Markdown(
                         '\n<div style="text-align:center;margin-top:16px">'
-                        '<span style="font-size:1.1em">完成后，前往 <b>「选择 TA」</b> →</span>'
+                        '<span style="font-size:1.1em">完成后，前往 <b>「心译对话」</b> 开始聊天 →</span>'
                         '</div>'
                     )
 
@@ -2568,18 +2585,27 @@ def build_ui() -> gr.Blocks:
                         return skip, out3, gr.Timer(active=active), st_up, ban_up
                     return skip, skip, gr.Timer(active=active), st_up, ban_up
 
+                # Note: decrypt_timer NOT in tick outputs — tick updates active state of
+                # the same instance without replacement, so tick stays registered
                 decrypt_timer.tick(
                     fn=_decrypt_poll,
                     outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner],
                 )
 
-                step1_btn.click(fn=run_step1_prepare, outputs=[step1_output, decrypt_timer])
+                # step1_btn: update UI then activate timer via .then() chain
+                step1_btn.click(fn=run_step1_prepare, outputs=[step1_output]).then(
+                    fn=lambda: gr.Timer(active=True),
+                    outputs=[decrypt_timer],
+                )
                 step2_btn.click(fn=run_step2_check_keys, outputs=step2_output)
                 step2_reextract_btn.click(fn=run_step2_reextract_instructions, outputs=step2_output)
-                step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output, decrypt_timer])
+                step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output]).then(
+                    fn=lambda: gr.Timer(active=True),
+                    outputs=[decrypt_timer],
+                )
                 def _link_external_dir_ui(path_str: str):
                     h, s = link_external_dir(path_str)
-                    return h, s, _setup1_status_html(), _step3_decrypt_banner_html()
+                    return h, s, gr.update(), gr.update()
 
                 link_btn.click(
                     fn=_link_external_dir_ui,
@@ -2592,12 +2618,10 @@ def build_ui() -> gr.Blocks:
                     outputs=[link_result, scan_info, setup1_status, step3_decrypt_banner],
                 )
 
-            # ================================================================
-            # Setup Tab 2: 联系人与对象
-            # ================================================================
-            with gr.Tab("选择 TA", id="tab-setup-2"):
-
-                gr.Markdown("### 告诉心译，TA 是谁")
+                # ================================================================
+                # 扫描联系人 & 选择对象（从原 Tab 2 移入）
+                # ================================================================
+                gr.Markdown("---\n#### 扫描联系人")
 
                 from src.data.partner_config import load_partner_wxid as _lpw
                 _cur_partner = _lpw().strip()
@@ -2607,7 +2631,6 @@ def build_ui() -> gr.Blocks:
                     + _step_done_html("训练模式", True, "训练{}的分身".format("自己" if _current_twin_mode() == "self" else "对象"))
                 ))
 
-                gr.Markdown("---\n#### 扫描联系人")
                 if _has_partner:
                     gr.HTML('<span style="color:#65a88a">✓ 对象已确认：<b>{}</b>。如需更换，请重新扫描。</span>'.format(_cur_partner))
 
@@ -2615,7 +2638,7 @@ def build_ui() -> gr.Blocks:
                     msg, _tbl, _dd = build_contact_registry_callback()
                     return msg, gr.update(choices=partner_candidate_choices())
 
-                scan_partner_btn = gr.Button("扫描联系人", variant="primary")
+                scan_partner_btn = gr.Button("扫描联系人", variant="secondary")
                 scan_partner_html = gr.HTML()
                 partner_pick = gr.Dropdown(
                     label="选择对象",
@@ -2639,8 +2662,7 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown("---\n#### 训练模式")
                 gr.Markdown(
                     "- **训练自己**：学你的说话风格，生成你的分身（对象跟「你」聊）\n"
-                    "- **训练对象**：学对象的说话风格，生成 TA 的分身（你跟「TA」聊）\n\n"
-                    "如果两个都要，先训练一个，再克隆项目另起一个 Dashboard。"
+                    "- **训练对象**：学对象的说话风格，生成 TA 的分身（你跟「TA」聊）"
                 )
                 twin_mode_radio = gr.Radio(
                     choices=[("训练自己的分身", "self"), ("训练对象的分身", "partner")],
@@ -2654,6 +2676,9 @@ def build_ui() -> gr.Blocks:
                     outputs=[twin_mode_html],
                 )
 
+                # ================================================================
+                # 开始学习
+                # ================================================================
                 gr.Markdown("---\n#### 开始学习")
                 gr.Markdown("确认对象和训练模式后，点击开始。")
 
@@ -4290,6 +4315,42 @@ def build_ui() -> gr.Blocks:
         ]
         progress_timer.tick(fn=_poll_tick, outputs=_all_timer_outputs)
         demo.load(fn=_on_page_load, outputs=_all_timer_outputs)
+
+        # --- 键盘快捷键（JavaScript）---
+        # 使用 gr.HTML 注入 keyboard hint overlay 和快捷键监听器，
+        # 比 demo.load(outputs=[]) 更可靠（Gradio 4.x 兼容性）。
+        _kb_html = """
+        <details class="keyboard-hint" style="display:none" id="keyboard-hints">
+            <summary>⌨️ 快捷键</summary>
+            <div class="shortcut-row"><span class="shortcut-label">发送消息</span><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd></span></div>
+            <div class="shortcut-row"><span class="shortcut-label">新对话</span><span><kbd>Ctrl</kbd>+<kbd>N</kbd></span></div>
+            <div class="shortcut-row"><span class="shortcut-label">呼出快捷键</span><span><kbd>?</kbd></span></div>
+        </details>
+        <script>
+        (function() {
+            var _visible = false;
+            document.addEventListener('keydown', function(e) {
+                if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA') {
+                    var el = document.getElementById('keyboard-hints');
+                    if (el) {
+                        _visible = !_visible;
+                        el.style.display = _visible ? 'block' : 'none';
+                        if (_visible) el.querySelector('summary').scrollIntoView({behavior:'smooth'});
+                    }
+                }
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    var send = document.getElementById('send-btn');
+                    if (send) { e.preventDefault(); send.click(); }
+                }
+                if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+                    var btn = document.querySelector('#new-chat-btn button, #new-chat-btn');
+                    if (btn) { e.preventDefault(); btn.click(); }
+                }
+            });
+        })();
+        </script>
+        """
+        gr.HTML(value=_kb_html, visible=False)
 
     return demo
 

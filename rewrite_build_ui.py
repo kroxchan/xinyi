@@ -207,7 +207,7 @@ new_build_ui = '''def build_ui() -> gr.Blocks:
             )
 
             # === Chat Tab ===
-            tab_chat, chatbot, _adv_state = render_chat_tab(
+            tab_chat, chatbot, _adv_state, thinking_indicator = render_chat_tab(
                 is_ready=is_ready,
                 components=components,
                 logger=logger,

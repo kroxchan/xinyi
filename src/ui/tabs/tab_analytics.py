@@ -9,6 +9,11 @@ import gradio as gr
 logger = logging.getLogger(__name__)
 
 
+def _lazy(name: str):
+    import src.app as _m
+    return getattr(_m, name)
+
+
 def _init_shareable_generator(components):
     """Initialize the ShareableReportGenerator from components."""
     if not components:
@@ -53,7 +58,8 @@ def _init_shareable_generator(components):
         return None
 
 
-def render_tab_analytics(components=None):
+def render_tab_analytics(components=None, demo=None):
+    load_analytics = _lazy("load_analytics")
     refresh_analytics_btn = gr.Button("刷新分析", variant="secondary")
 
     overview_html = gr.HTML(label="数据概览")
@@ -76,7 +82,8 @@ def render_tab_analytics(components=None):
 
     analytics_outputs = [overview_html, contacts_html, hourly_html, monthly_html, relationship_html, belief_summary_html, persona_html]
     refresh_analytics_btn.click(fn=load_analytics, outputs=analytics_outputs)
-    demo.load(fn=load_analytics, outputs=analytics_outputs)
+    if demo is not None:
+        demo.load(fn=load_analytics, outputs=analytics_outputs)
 
     # ================================================================
     # 单方视角可分享报告

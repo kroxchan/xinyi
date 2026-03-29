@@ -1,21 +1,210 @@
 """Tab: tab_setup — extracted from app.py"""
 from __future__ import annotations
 
-from src.features.local_model import LocalModelPresets
+import gradio as gr
+from pathlib import Path
 
-def render_tab_setup(components=None):
+from src.features.local_model import LocalModelPresets
+from src.ui.callbacks_api import (
+    save_api,
+    load_api_fields,
+    run_step1_prepare,
+    run_step2_check_keys,
+    run_step2_reextract_instructions,
+    run_step3_decrypt_only,
+    link_external_dir,
+    step_done_html,
+    setup1_status_html,
+    step3_decrypt_banner_html,
+    _build_step2_guide_html,
+    STEP1_GUIDE_HTML,
+)
+from src.ui.shared import _step_html
+from src.ui.ux_helpers import UXHelper, StatusLevel
+
+
+def _lazy_from_app(name: str):
+    """Lazy import from src.app to avoid circular dependency at import time."""
+    import src.app as _m
+    return getattr(_m, name)
+
+
+def render_tab_setup(
+    components=None,
+    *,
+    _has_api: bool,
+    _pv: str,
+    _md: str,
+    _ak: str,
+    _bu: str,
+    init_status: dict,
+    _has_decrypted: bool,
+    is_ready: bool = False,
+    demo=None,
+) -> dict:
+    """Returns dict with references to output components for event wiring."""
+
+    # --- Setup Wizard 进度指示器 ---
+    _ak2, _bu2, _md2, _pv2 = load_api_fields()
+    _has_api2 = bool(_ak2)
+
+    setup_wizard_html = gr.HTML(
+        value=UXHelper.format_setup_progress([
+            {"name": "API 配置", "done": _has_api2, "active": not _has_api2},
+            {"name": "解密数据", "done": _has_decrypted, "active": _has_api2 and not _has_decrypted},
+            {"name": "训练",    "done": is_ready,       "active": _has_api2 and _has_decrypted and not is_ready},
+        ])
+    )
+
+    # === 错误恢复引导（新增）===
+    gr.HTML(
+        '<div id="setup-recovery-guide" style="display:none;margin:12px 0"></div>'
+    )
+
+    # 上下文感知的错误恢复折叠区
+    with gr.Accordion("🆘 遇到问题了？查看解决方案", open=False, elem_id="setup-recovery-accordion"):
+        _recovery_html = _build_recovery_guide_html(
+            has_api=bool(_ak2),
+            has_scanner=init_status.get("has_scanner", False),
+            has_keys=init_status.get("has_keys", False),
+            has_decrypted=init_status.get("has_decrypted", False),
+            is_ready=is_ready,
+        )
+        gr.HTML(value=_recovery_html)
+
+    def _build_recovery_guide_html(
+        has_api: bool,
+        has_scanner: bool,
+        has_keys: bool,
+        has_decrypted: bool,
+        is_ready: bool,
+    ) -> str:
+        """根据当前 pipeline 状态，生成上下文感知的错误恢复指南。"""
+        sections = []
+
+        if not has_api:
+            sections.append({
+                "title": "1️⃣ API 配置问题",
+                "icon": "🔑",
+                "color": "#dc2626",
+                "bg": "#fee2e2",
+                "items": [
+                    ("无法获取 API Key", "前往 OpenAI / Anthropic 官网申请 API Key，免费额度即可使用"),
+                    ("API Key 报错 401/403", "检查 Key 是否复制完整，前后无空格；确认账户有可用额度"),
+                    ("API Key 报错 429", "请求频率超限，稍等 1-2 分钟后再试，或升级付费套餐"),
+                    ("模型不支持", "推荐使用 gpt-4o-mini 或 gpt-4o，兼容性好"),
+                ],
+            })
+
+        if not has_scanner:
+            sections.append({
+                "title": "2️⃣ 解密工具问题（macOS）",
+                "icon": "🔧",
+                "color": "#d97706",
+                "bg": "#fef3c7",
+                "items": [
+                    ("提示 'task_for_pid failed'", "这是 macOS 安全限制，需关闭 SIP 调试限制后重试；详见上方「获取访问权限」卡片中的步骤"),
+                    ("提示 'Operation not permitted'", "在「系统设置 → 隐私与安全 → 安全性与隐私」中允许 Python 访问"),
+                    ("提示 'Xcode not found'", "运行：xcode-select --install 安装 Xcode 命令行工具"),
+                    ("编译失败", "确保 macOS 版本 ≥ 10.14，Python 版本 ≥ 3.9"),
+                ],
+            })
+
+        if has_scanner and not has_keys:
+            sections.append({
+                "title": "3️⃣ 密钥提取问题",
+                "icon": "🔐",
+                "color": "#d97706",
+                "bg": "#fef3c7",
+                "items": [
+                    ("找不到密钥 / 密钥数量为 0", "确保微信已登录并运行；私聊需要有实际消息往来才能提取密钥"),
+                    ("只有群聊密钥，私聊无法解密", "私聊需要有至少 1 条消息；跟对方发一条消息后再提取密钥"),
+                    ("重新提取后密钥消失", "部分密钥为临时会话密钥，建议保持微信一直运行"),
+                ],
+            })
+
+        if has_keys and not has_decrypted:
+            sections.append({
+                "title": "4️⃣ 数据库解密问题",
+                "icon": "📂",
+                "color": "#7c3aed",
+                "bg": "#ede9fe",
+                "items": [
+                    ("解密失败 / 0 个数据库", "请在「设置 → 系统」中查看详细错误信息；尝试重新提取密钥"),
+                    ("数据库被占用", "确保微信已关闭，或使用「导入已有解密目录」功能"),
+                    ("解密很慢", "正常，macOS 上可能需要 5-10 分钟；耐心等待即可"),
+                ],
+            })
+
+        if has_decrypted and not is_ready:
+            sections.append({
+                "title": "5️⃣ 训练/学习问题",
+                "icon": "🤖",
+                "color": "#0891b2",
+                "bg": "#ecfeff",
+                "items": [
+                    ("训练中断 / 页面刷新", "数据保存在本地，重新进入会自动恢复；终端可见详细日志"),
+                    ("人格不像 TA", "建议训练 100+ 条真实对话；可在「对话」Tab 使用「不像 TA？」反馈改进"),
+                    ("对话数量太少", "至少需要 30 条消息；越多训练效果越好"),
+                ],
+            })
+
+        sections.append({
+            "title": "💡 通用问题",
+            "icon": "🔎",
+            "color": "#475569",
+            "bg": "#f1f5f9",
+            "items": [
+                ("页面卡住 / 无响应", "尝试刷新页面（Cmd/Ctrl+R）；重启应用"),
+                ("找不到配置文件", "在项目根目录查找 config.yaml；不存在时自动使用默认配置"),
+                ("端口被占用", "其他进程占用了 7872 端口；修改 app.py 中的 server_port 或关闭冲突进程"),
+                ("需要更多帮助", "查看项目根目录的 INSTALL.md 文档，或在终端查看详细错误日志"),
+            ],
+        })
+
+        html = '<div style="display:flex;flex-direction:column;gap:16px;padding:4px 0">'
+        for sec in sections:
+            items_html = ""
+            for title, detail in sec["items"]:
+                items_html += (
+                    f'<div style="margin-bottom:10px;padding:8px 10px;background:white;border-radius:6px">'
+                    f'<div style="font-weight:600;font-size:.85em;color:{sec["color"]};margin-bottom:3px">'
+                    f'❓ {title}</div>'
+                    f'<div style="font-size:.82em;color:#4a4a4a;line-height:1.5">{detail}</div>'
+                    f'</div>'
+                )
+            html += (
+                f'<div style="padding:14px 16px;background:{sec["bg"]};border-radius:10px">'
+                f'<div style="font-weight:700;font-size:.9em;color:{sec["color"]};margin-bottom:12px">'
+                f'{sec["icon"]} {sec["title"]}</div>'
+                f'{items_html}'
+                f'</div>'
+            )
+        html += '</div>'
+        return html
 
     gr.Markdown("### 连接你的 AI 服务")
 
     # -- status overview (refreshed after decrypt via decrypt_timer) --
-    setup1_status = gr.HTML(value=_setup1_status_html())
+    setup1_status = gr.HTML(value=setup1_status_html())
 
     # -- API config --
     gr.Markdown("---\n#### API 配置")
     if _has_api:
-        gr.Markdown(
-            '<span style="color:#65a88a">✓ API 已配置完成。如需修改，可在「设置」中操作。</span>'
-        )
+                    # 显示当前配置的摘要，方便用户确认当前使用的是哪个模型/API
+                    _display_model = _md or "未指定"
+                    gr.HTML(
+                        '<div style="background:#fefcfb;border:1px solid #e6dcd8;border-radius:8px;padding:12px 16px;margin:8px 0">'
+                        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
+                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Provider</span><br><b>{_pv}</b></div>'
+                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Model</span><br><b>{_display_model}</b></div>'
+                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Base URL</span><br><code style="font-size:0.9em">{_bu or "默认"}</code></div>'
+                        '</div>'
+                        '<div style="margin-top:8px;font-size:0.85em;color:#8c7b7f">'
+                        '如需修改，请前往「设置」页面。'
+                        '</div>'
+                        '</div>'
+                    )
     else:
         gr.Markdown("填写大模型 API 信息后保存。")
     with gr.Row():
@@ -31,10 +220,20 @@ def render_tab_setup(components=None):
     if not _has_api:
         save_api_btn = gr.Button("保存 API 配置", variant="primary")
         save_api_result = gr.HTML()
+
+        def _save_api_with_wizard(pv, md, ak, bu):
+            msg = save_api(pv, md, ak, bu)
+            wizard = UXHelper.format_setup_progress([
+                {"name": "API 配置", "done": bool(ak), "active": not bool(ak)},
+                {"name": "解密数据", "done": _has_decrypted, "active": bool(ak) and not _has_decrypted},
+                {"name": "训练",    "done": is_ready,       "active": bool(ak) and _has_decrypted and not is_ready},
+            ])
+            return msg, wizard
+
         save_api_btn.click(
-            fn=_save_api,
+            fn=_save_api_with_wizard,
             inputs=[api_provider_input, api_model_input, api_key_input, api_base_input],
-            outputs=save_api_result,
+            outputs=[save_api_result, setup_wizard_html],
         )
 
     # -- local model config (privacy-first) --
@@ -203,7 +402,7 @@ def render_tab_setup(components=None):
     step2_output = gr.HTML()
 
     gr.Markdown("---\n#### 解密数据库")
-    step3_decrypt_banner = gr.HTML(value=_step3_decrypt_banner_html())
+    step3_decrypt_banner = gr.HTML(value=step3_decrypt_banner_html())
     gr.HTML(
         "<div style='font-size:0.82em;opacity:0.88;line-height:1.65;margin:8px 0 0'>"
         "重新提取密钥或更换数据源后，可随时点「重新解密」覆盖 <code>data/raw</code> 下的解密结果。"
@@ -234,52 +433,131 @@ def render_tab_setup(components=None):
             '</div>'
         )
 
-    decrypt_timer = gr.Timer(value=3, active=False)
+    # 轮询通过 demo.load(fn=..., every=3) 实现，不使用 gr.Timer 组件
+    # 原因：gr.Timer 作为 output 被替换时，tick 注册的实例也随之失效，无法激活定时器
 
-    def _decrypt_poll():
-        r = TrainingRunner.instance()
-        steps = r.get_steps()
-        active = r.is_running() and not r.done
-        skip = gr.update()
-        st_up = skip
-        ban_up = skip
-        if not steps:
-            return skip, skip, gr.Timer(active=active), st_up, ban_up
-        html = _step_html(steps)
-        if r.mode == "step1":
-            return html, skip, gr.Timer(active=active), st_up, ban_up
-        if r.mode == "step3":
-            out3 = html
-            if r.done:
-                st_up = _setup1_status_html()
-                ban_up = _step3_decrypt_banner_html()
-            return skip, out3, gr.Timer(active=active), st_up, ban_up
-        return skip, skip, gr.Timer(active=active), st_up, ban_up
-
-    decrypt_timer.tick(
-        fn=_decrypt_poll,
-        outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner],
-    )
-
-    step1_btn.click(fn=run_step1_prepare, outputs=[step1_output, decrypt_timer])
+    step1_btn.click(fn=run_step1_prepare, outputs=[step1_output])
     step2_btn.click(fn=run_step2_check_keys, outputs=step2_output)
     step2_reextract_btn.click(fn=run_step2_reextract_instructions, outputs=step2_output)
-    step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output, decrypt_timer])
+    step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output])
+
     def _link_external_dir_ui(path_str: str):
         h, s = link_external_dir(path_str)
-        return h, s, _setup1_status_html(), _step3_decrypt_banner_html()
+        return h, s, gr.update()   # placeholder: keeps outputs=[link_result, scan_info, setup1_status] correct
 
     link_btn.click(
         fn=_link_external_dir_ui,
         inputs=path_input,
-        outputs=[link_result, scan_info, setup1_status, step3_decrypt_banner],
+        outputs=[link_result, scan_info, setup1_status],
     )
     path_input.submit(
         fn=_link_external_dir_ui,
         inputs=path_input,
-        outputs=[link_result, scan_info, setup1_status, step3_decrypt_banner],
+        outputs=[link_result, scan_info, setup1_status],
     )
 
     # ================================================================
     # Setup Tab 2: 联系人与对象
     # ================================================================
+    gr.Markdown("### 告诉心译，TA 是谁")
+
+    from src.data.partner_config import load_partner_wxid as _lpw
+    _cur_partner = _lpw().strip()
+
+    _has_partner = init_status.get("has_partner", False)
+
+    # Lazily resolve functions from src.app to avoid circular import
+    _build_contact_registry_callback = _lazy_from_app("build_contact_registry_callback")
+    _partner_candidate_choices = _lazy_from_app("partner_candidate_choices")
+    _save_partner_selection = _lazy_from_app("save_partner_selection")
+    _save_twin_mode_selection = _lazy_from_app("save_twin_mode_selection")
+    _current_twin_mode = _lazy_from_app("_current_twin_mode")
+    _import_data = _lazy_from_app("import_data")
+    _detect_pipeline_status = _lazy_from_app("_detect_pipeline_status")
+    _TrainingRunner = _lazy_from_app("TrainingRunner")
+
+    setup2_status = gr.HTML(value=(
+        step_done_html("对象已确认", _has_partner, _cur_partner if _has_partner else "未选择") + "<br>"
+        + step_done_html("训练模式", True, "训练{}的分身".format(
+            "自己" if _current_twin_mode() == "self" else "对象"
+        ))
+    ))
+
+    gr.Markdown("---\n#### 扫描联系人")
+    if _has_partner:
+        gr.HTML('<span style="color:#65a88a">✓ 对象已确认：<b>{}</b>。如需更换，请重新扫描。</span>'.format(_cur_partner))
+
+    def _partner_scan_only():
+        msg, _tbl, _dd = _build_contact_registry_callback()
+        return msg, gr.update(choices=_partner_candidate_choices())
+
+    scan_partner_btn = gr.Button("扫描联系人", variant="primary")
+    scan_partner_html = gr.HTML()
+    partner_pick = gr.Dropdown(
+        label="选择对象",
+        choices=_partner_candidate_choices(),
+        interactive=True,
+        allow_custom_value=False,
+    )
+    save_partner_btn = gr.Button("保存为我的对象", variant="primary")
+    save_partner_html = gr.HTML()
+
+    scan_partner_btn.click(
+        fn=_partner_scan_only,
+        outputs=[scan_partner_html, partner_pick],
+    )
+    save_partner_btn.click(
+        fn=_save_partner_selection,
+        inputs=[partner_pick],
+        outputs=[save_partner_html, partner_pick],
+    )
+
+    gr.Markdown("---\n#### 训练模式")
+    gr.Markdown(
+        "- **训练自己**：学你的说话风格，生成你的分身（对象跟「你」聊）\n"
+        "- **训练对象**：学对象的说话风格，生成 TA 的分身（你跟「TA」聊）\n\n"
+        "如果两个都要，先训练一个，再克隆项目另起一个 Dashboard。"
+    )
+    twin_mode_radio = gr.Radio(
+        choices=[("训练自己的分身", "self"), ("训练对象的分身", "partner")],
+        value=_current_twin_mode(),
+        label="训练模式",
+    )
+    twin_mode_html = gr.HTML()
+    twin_mode_radio.change(
+        fn=_save_twin_mode_selection,
+        inputs=[twin_mode_radio],
+        outputs=[twin_mode_html],
+    )
+
+    gr.Markdown("---\n#### 开始学习")
+    gr.Markdown("确认对象和训练模式后，点击开始。")
+
+    if is_ready:
+        gr.Markdown(
+            '<div style="padding:16px;background:#065f46;border-radius:10px;text-align:center;margin:12px 0">'
+            '<span style="color:#6ee7b7;font-size:1.2em;font-weight:600">✅ 学习完成！所有功能已解锁。</span>'
+            '</div>'
+        )
+
+    train_btn = gr.Button(
+        "重新学习" if is_ready else "开始学习",
+        variant="primary",
+        size="lg",
+    )
+    train_output = gr.Textbox(label="学习进度", lines=12, interactive=False, show_copy_button=True)
+
+    # 注意：不再用 gr.Timer 作为 output 组件（Gradio 会替换实例导致 tick 失效）
+    # 轮询统一通过 app.py 的 demo.load(fn=..., every=3) 实现
+
+    # train_btn 只更新进度文字，定时轮询由 app.py demo.load(fn=..., every=3) 统一处理
+    train_btn.click(fn=_import_data, outputs=[train_output])
+
+    return {
+        "train_output": train_output,
+        "step1_output": step1_output,
+        "step3_output": step3_output,
+        "setup1_status": setup1_status,
+        "step3_decrypt_banner": step3_decrypt_banner,
+        "setup_wizard_html": setup_wizard_html,
+    }

@@ -1,7 +1,19 @@
 """Tab: tab_memories — extracted from app.py"""
 from __future__ import annotations
 
-def render_tab_memories(components=None):
+import gradio as gr
+
+
+def _lazy(name: str):
+    import src.app as _m
+    return getattr(_m, name)
+
+
+def render_tab_memories(components=None, demo=None):
+    query_memories = _lazy("query_memories")
+    edit_memory = _lazy("edit_memory")
+    delete_memory = _lazy("delete_memory")
+    add_memory_manual = _lazy("add_memory_manual")
     gr.Markdown(
         "### 记忆库管理\n"
         "查看、搜索、编辑从聊天记录中提取的事实记忆。\n"
@@ -48,9 +60,3 @@ def render_tab_memories(components=None):
     mem_save_btn.click(fn=edit_memory, inputs=[mem_edit_id, mem_edit_content, mem_edit_conf], outputs=[mem_edit_result, mem_table])
     mem_del_btn.click(fn=delete_memory, inputs=mem_edit_id, outputs=[mem_edit_result, mem_table])
     mem_add_btn.click(fn=add_memory_manual, inputs=[mem_add_type, mem_add_content], outputs=[mem_add_result, mem_table])
-
-    # (情感调解Tab已合并入聊天Tab)
-
-    # ================================================================
-    # Tab: System Info
-    # ================================================================

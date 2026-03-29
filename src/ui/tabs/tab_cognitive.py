@@ -1,7 +1,12 @@
 """Tab: tab_cognitive — extracted from app.py"""
 from __future__ import annotations
 
-def render_tab_cognitive(components=None):
+from pathlib import Path
+
+import gradio as gr
+
+
+def render_tab_cognitive(components=None, demo=None):
     gr.Markdown(
         "### 人格校准\n"
         "通过情境任务校准分身的认知模型。\n"
@@ -74,10 +79,11 @@ def render_tab_cognitive(components=None):
             inputs=[bi_name, bi_nickname, bi_gender, bi_age, bi_location, bi_occupation, bi_extra],
             outputs=[bi_status],
         )
-        demo.load(
-            fn=_load_basic_info,
-            outputs=[bi_name, bi_nickname, bi_gender, bi_age, bi_location, bi_occupation, bi_extra],
-        )
+        if demo is not None:
+            demo.load(
+                fn=_load_basic_info,
+                outputs=[bi_name, bi_nickname, bi_gender, bi_age, bi_location, bi_occupation, bi_extra],
+            )
     task_progress_html = gr.HTML(value="")
     with gr.Group():
         task_display = gr.Markdown(value="*点击「开始校准」获取第一道题*")
@@ -231,7 +237,8 @@ def render_tab_cognitive(components=None):
     )
     scan_contradictions_btn.click(fn=_scan_contradictions, outputs=contradiction_output)
 
-    demo.load(fn=_task_progress_html, outputs=task_progress_html)
+    if demo is not None:
+        demo.load(fn=_task_progress_html, outputs=task_progress_html)
 
     # ================================================================
     # Tab: Analytics Dashboard

@@ -523,6 +523,50 @@ class PartnerAdvisor:
             session.add_message("assistant", b)
         return bubbles
 
+    def chat_stream(
+        self,
+        user_message: str,
+        session: AdvisorSession,
+    ):
+        """Generator: yields reply text chunks for real-time streaming.
+
+        Caller is responsible for calling session.add_message("user") BEFORE
+        calling this generator (needed for correct history window building).
+        Caller is responsible for calling session.add_message("assistant", ...)
+        with the final accumulated reply AFTER iteration completes.
+        """
+        if not user_message:
+            return
+
+        self._ready.wait(timeout=120)
+
+        # NOTE: user message already added by caller
+        system = self._system_prompt or "你在微信上聊天。"
+        history = self._build_history_window(session)
+
+        api_messages: list[dict] = [{"role": "system", "content": system}]
+        api_messages.extend(history)
+
+        try:
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=api_messages,
+                temperature=0.85,
+                max_tokens=400,
+                stream=True,
+            )
+            collected = ""
+            for event in stream:
+                if event.choices and event.choices[0].delta.content:
+                    token = event.choices[0].delta.content
+                    collected += token
+                    yield token
+            return  # exit normally after iteration
+
+        except Exception as e:
+            logger.exception("PartnerAdvisor stream failed")
+            yield f"不好意思出了点问题（{e}）"
+
     # ------------------------------------------------------------------
     # History sliding window
     # ------------------------------------------------------------------

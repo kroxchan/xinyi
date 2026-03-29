@@ -95,6 +95,34 @@
 
 系统从选择中**反推**决策逻辑，而不是相信自我描述。推断结果反馈进信念图谱，形成闭环。
 
+初始化题库不是随便拼的“恋爱问答”，而是按几个稳定的人格与关系心理学构念来设计：
+
+- **成人依恋**：参考 ECR / ECR-R 这类研究常用的依恋焦虑、依恋回避维度，观察一个人在冲突后追问、抽离、安抚需求、信任修复上的偏好
+- **情绪调节**：参考 emotion regulation 与 couples interpersonal emotion regulation 研究，看一个人在受伤、被否定、被误解时是解释、沉默、冷处理，还是主动寻求修复
+- **价值权衡 / 道德取舍**：参考 moral trade-off / dilemma judgment 相关研究，不只看“选哪个”，更看如何在忠诚、公平、伤害控制、关系承诺之间做平衡
+- **身份边界与自主性**：参考 self-determination / boundary regulation 的思路，观察一个人在亲密关系里何时愿意妥协，何时会觉得“再退一步就不像我了”
+- **目标层级与代价承受**：借鉴 social-cognitive personality signatures / goal hierarchy 的思路，关注一个人在事业、关系、自由、家庭期待之间如何排序，以及愿意承担什么代价
+
+心译没有把论文量表题直接搬进 UI，也没有把用户当成在做心理测验。更接近的做法是：
+
+1. 用论文里比较稳定的心理构念做题目“骨架”
+2. 改写成日常关系里能自然回答的情境题
+3. 通过回答内容反推这个人的 if-then 模式，而不是只记一个标签
+
+当前默认初始化题主要参考过这些方向：
+
+- Brennan, Clark, Shaver 的 **Experiences in Close Relationships (ECR)** / 后续 ECR-R 体系，用于依恋焦虑与依恋回避
+- Mikulincer & Shaver 关于 **adult romantic attachment**、亲密关系中的安全感与调节模式
+- couples **interpersonal emotion regulation** 方向的研究，用于设计“受伤后如何修复 / 需要怎样被安抚”这类题
+- **moral trade-off / dilemma judgment** 相关研究，用于设计必须在冲突价值之间取舍的任务
+- social-cognitive personality signatures / goal hierarchy 的思路，用于设计“长期优先级 / 代价承受”类题
+
+所以，校准的目标不是给用户贴一个“你是某某型人格”的标签，而是让系统逐渐学到：
+
+- 在什么场景下，你会先追问还是先退开
+- 在什么边界上，你会妥协，什么地方不会
+- 当关系、安全感、尊严、现实利益冲突时，你通常怎么排序
+
 ### 6. 关系报告 & 分身诊断
 
 - **关系报告**：自动生成双方沟通模式、情感结构、信任度分析
@@ -250,6 +278,8 @@ docker-compose up
 | 隐私脱敏 | `src/data/privacy_redactor.py` | 微信号、位置、转账金额等可配置脱敏 |
 | API 热重载 | 保存 API 配置后无需手动重启 | 配置页一键保存，分身引擎自动重建 |
 | 双小模型接入 | `reranker + emotion_tagger` | 训练时自动校验下载，检索时重排并按情绪加权 |
+| 校准题库升级 | 理论化默认初始化题 + 动态追问题 | 新用户可直接开始校准，后续再由信念矛盾生成追问题 |
+| 内心地图修正 | 支持手动编辑信念图谱 | 当 AI 归纳不准时，用户可直接修正主题/立场/条件/置信度 |
 
 ---
 

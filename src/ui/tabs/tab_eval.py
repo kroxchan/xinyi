@@ -1,6 +1,12 @@
 """Tab: tab_eval — extracted from app.py"""
 from __future__ import annotations
 
+from pathlib import Path
+
+import gradio as gr
+import json
+
+
 def render_tab_eval(components=None):
 
     # ── Relationship Insights Report ─────────────────────

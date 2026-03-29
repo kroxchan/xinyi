@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, Generator
 
 from openai import OpenAI
 from anthropic import Anthropic
@@ -51,6 +52,8 @@ class ChatEngine:
                 kwargs["base_url"] = config["base_url"]
             if config.get("headers"):
                 kwargs["default_headers"] = config["headers"]
+            # 设置默认超时，避免请求卡死
+            kwargs["timeout"] = config.get("timeout", 30.0)
             self.client: Any = OpenAI(**kwargs)
         elif self.provider == "anthropic":
             self.client = Anthropic(api_key=config["api_key"])
@@ -137,12 +140,12 @@ class ChatEngine:
             retrieve_future = pool.submit(_do_retrieve)
 
             try:
-                inner_thought = think_future.result(timeout=30)
+                inner_thought = think_future.result(timeout=25)  # 减少超时
             except Exception as e:
                 logger.warning("Inner think timeout/error: %s", e)
-                return "⚠ 思考模块API超时，请重试"
+                return "⚠️ 思考超时，请重试。检查网络连接或 API 服务状态。"
             try:
-                memories, beliefs_text, episodic_text, few_shot = retrieve_future.result(timeout=20)
+                memories, beliefs_text, episodic_text, few_shot = retrieve_future.result(timeout=15)  # 减少超时
             except Exception as e:
                 logger.warning("Retrieval timeout: %s", e)
                 self._retrieval_degraded = True
@@ -193,6 +196,206 @@ class ChatEngine:
     def quick_reply(self, message: str) -> str:
         """Stateless single-turn reply for evaluation — no chat history."""
         return self.chat(message, chat_history=[], contact_wxid=None, contact_context=None)
+
+    # --------------------------------------------------------------------------
+    # 流式对话（Streaming）—— 用于 Gradio 的实时输出
+    # --------------------------------------------------------------------------
+
+    def chat_stream(
+        self,
+        user_message: str,
+        chat_history: list[dict] | None = None,
+        contact_wxid: str | None = None,
+        contact_context: dict | None = None,
+    ) -> Generator[tuple[str, str], None, None]:
+        """流式对话生成器，yield (thinking_html, reply_chunk)。
+
+        - 首个 yield：返回思考动画 HTML（空字符串表示无思考动画）
+        - 后续 yield：逐 token 返回回复文本片段
+        - 末尾 yield：返回最终的降级警告（如有）
+
+        用于 Gradio EventHandler，实时渲染思考动画和流式回复。
+        """
+        from src.ui.ux_helpers import UXHelper
+
+        if not all([self.memory_retriever, self.belief_graph, self.prompt_builder]):
+            yield UXHelper.thinking_visible(False), UXHelper.format_error(
+                title="系统尚未初始化",
+                message="请先完成数据导入和训练，再开始聊天。",
+                solution="前往「设置」Tab 完成 API 配置和解密步骤。",
+            )
+            return
+
+        self._retrieval_degraded = False
+
+        # --- Stage 1: inner thinking + retrieval in parallel ---
+        inner_thought: dict | None = None
+        memories = ""
+        beliefs_text = ""
+        episodic_text = ""
+        few_shot: list[str] = []
+
+        def _do_think():
+            return self._inner_think(user_message, chat_history, contact_context)
+
+        def _do_retrieve():
+            q = user_message
+            query_emotion = None
+            if self.emotion_tracker:
+                query_emotion = self.emotion_tracker.current_emotion
+            mem = self.memory_retriever.retrieve(
+                q,
+                top_k=self.top_k_vectors,
+                contact_wxid=contact_wxid,
+                query_emotion=query_emotion,
+            )
+            bel_raw = self.belief_graph.query_by_topic(user_message, top_k=self.top_k_beliefs)
+            bel_lines: list[str] = []
+            for b in bel_raw:
+                line = f"- 关于「{b.get('topic', '')}」: {b.get('stance', '')}"
+                if b.get("condition"):
+                    line += f"（前提：{b['condition']}）"
+                bel_lines.append(line)
+            ep = ""
+            if self.memory_bank:
+                hits = self.memory_bank.query(user_message, top_k=5)
+                ep = self.memory_bank.format_for_prompt(hits)
+            fs = self._get_few_shot_examples(contact_wxid)
+            return mem, "\n".join(bel_lines), ep, fs
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            think_future = pool.submit(_do_think)
+            retrieve_future = pool.submit(_do_retrieve)
+
+            try:
+                inner_thought = think_future.result(timeout=25)
+            except Exception as e:
+                logger.warning("Inner think timeout/error: %s", e)
+                yield UXHelper.thinking_visible(False), UXHelper.format_error(
+                    title="思考模块超时",
+                    message="AI 理解阶段响应过慢，请重试。",
+                    solution="1. 检查网络连接\n2. 稍后重试\n3. 如持续出现，请确认 API 服务正常",
+                )
+                return
+
+            # 思考完成 → 显示思考动画，然后立即开始流式回复
+            yield UXHelper.thinking_visible(True), ""
+
+            try:
+                memories, beliefs_text, episodic_text, few_shot = retrieve_future.result(timeout=15)
+            except Exception as e:
+                logger.warning("Retrieval timeout: %s", e)
+                self._retrieval_degraded = True
+
+        if inner_thought is None:
+            yield UXHelper.thinking_visible(False), UXHelper.format_error(
+                title="思考模块异常",
+                message="AI 理解阶段返回了异常结果，请重试。",
+                solution="1. 重试发送消息\n2. 如问题持续，检查 API Key 配置",
+            )
+            return
+
+        # --- Stage 1.5: emotion tracking ---
+        emotion_prompt = ""
+        emotion_transition = ""
+        if self.emotion_tracker:
+            if inner_thought.get("my_feeling"):
+                self.emotion_tracker.set_reactive_emotion(
+                    inner_thought["my_feeling"],
+                    confidence=inner_thought.get("feeling_intensity", 0.7),
+                    their_emotion=inner_thought.get("their_emotion"),
+                    contagion=inner_thought.get("contagion", "slight"),
+                )
+            else:
+                self.emotion_tracker.update_from_history(chat_history)
+            emotion_prompt = self.emotion_tracker.get_emotion_prompt()
+            emotion_transition = self.emotion_tracker.get_emotion_transition_hint()
+
+        # --- Stage 2: build prompt + stream reply ---
+        system_prompt = self.prompt_builder.build_system_prompt(
+            retrieved_memories=memories,
+            retrieved_beliefs=beliefs_text,
+            episodic_memories=episodic_text,
+            contact_context=contact_context,
+            few_shot_examples=few_shot,
+            emotion_prompt=emotion_prompt,
+            emotion_transition=emotion_transition,
+            inner_thought=inner_thought,
+        )
+
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        if chat_history:
+            messages.extend(chat_history)
+        messages.append({"role": "user", "content": user_message})
+
+        # 流式 yield reply chunks
+        yield UXHelper.thinking_visible(False), UXHelper.stream_stage_html("replying")
+
+        for stage_html, chunk in self._call_llm_stream(messages):
+            yield stage_html, chunk
+
+        # 降级警告（如果检索超时）
+        if self._retrieval_degraded:
+            yield "", UXHelper.format_warning(
+                title="记忆检索超时",
+                message="部分对话记忆未能加载，回复可能缺少上下文参考。",
+                hint="不影响主要功能，下次对话通常自动恢复。",
+            )
+
+    def _call_llm_stream(self, messages: list[dict]) -> Generator[tuple[str, str], None, None]:
+        """流式 LLM 调用，yield 每个 token chunk。"""
+        from src.ui.ux_helpers import UXHelper
+
+        max_retries = 3
+        base_timeout = 20
+        for attempt in range(1, max_retries + 1):
+            try:
+                if self.provider in ("openai", "gemini"):
+                    stream = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.9,
+                        max_tokens=150,
+                        stream=True,
+                        timeout=base_timeout,
+                    )
+                    for chunk in stream:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            yield "", self._clean_reply(chunk.choices[0].delta.content)
+                    return
+
+                elif self.provider == "anthropic":
+                    system_text = ""
+                    chat_messages: list[dict] = []
+                    for m in messages:
+                        if m["role"] == "system":
+                            system_text = m["content"]
+                        else:
+                            chat_messages.append(m)
+                    with self.client.messages.stream(
+                        model=self.model,
+                        max_tokens=150,
+                        system=system_text,
+                        messages=chat_messages,
+                        timeout=base_timeout,
+                    ) as stream:
+                        for event in stream:
+                            if event.type == "content_block_delta" and event.delta.text:
+                                yield "", event.delta.text
+                    return
+
+            except Exception as e:
+                logger.warning("LLM stream error (attempt %d/%d): %s", attempt, max_retries, e)
+                if attempt < max_retries:
+                    yield "", UXHelper.retry_progress(attempt, max_retries, "重试回复中")
+                    import time as _time
+                    _time.sleep(min(2 ** attempt, 5))
+                    continue
+                yield "", UXHelper.format_error(
+                    title="回复生成失败",
+                    message=f"连续 {max_retries} 次连接失败（{type(e).__name__}）。请检查网络和 API 配置。",
+                    solution="1. 检查网络连接\n2. 确认 API Key 有效\n3. 如持续失败，请在「系统」Tab 检查 API 状态",
+                )
 
     def _get_few_shot_examples(self, contact_wxid: str | None = None) -> list[str]:
         # Timeout: called from the parallel _do_retrieve() thread, bounded by
@@ -318,7 +521,8 @@ class ChatEngine:
             message=user_message,
         )
 
-        max_retries = 10
+        max_retries = 3  # 减少重试次数，加快失败检测
+        base_timeout = 15  # 基础超时时间（秒）
         for attempt in range(max_retries):
             try:
                 if self.provider in ("openai", "gemini"):
@@ -327,12 +531,14 @@ class ChatEngine:
                         messages=[{"role": "user", "content": prompt_text}],
                         temperature=0.6,
                         max_tokens=150,
+                        timeout=base_timeout,  # 添加超时限制
                     )
                     raw = resp.choices[0].message.content or ""
                 elif self.provider == "anthropic":
                     resp = self.client.messages.create(
                         model=self.model,
                         max_tokens=150,
+                        timeout=base_timeout,  # 添加超时限制
                         messages=[{"role": "user", "content": prompt_text}],
                     )
                     raw = resp.content[0].text
@@ -389,37 +595,52 @@ class ChatEngine:
         return ' '.join(lines) if len(lines) > 1 else (lines[0] if lines else text)
 
     def _call_llm(self, messages: list[dict]) -> str:
-        try:
-            if self.provider in ("openai", "gemini"):
-                resp = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=0.9,
-                    max_tokens=150,
+        max_retries = 2
+        timeout = 20  # 减少超时，加快失败检测
+        for attempt in range(max_retries + 1):
+            try:
+                if self.provider in ("openai", "gemini"):
+                    resp = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.9,
+                        max_tokens=150,
+                        timeout=timeout,
+                    )
+                    raw = resp.choices[0].message.content or ""
+                    return self._clean_reply(raw)
+
+                if self.provider == "anthropic":
+                    system_text = ""
+                    chat_messages: list[dict] = []
+                    for m in messages:
+                        if m["role"] == "system":
+                            system_text = m["content"]
+                        else:
+                            chat_messages.append(m)
+
+                    resp = self.client.messages.create(
+                        model=self.model,
+                        max_tokens=150,
+                        system=system_text,
+                        messages=chat_messages,
+                        timeout=timeout,
+                    )
+                    raw = resp.content[0].text
+                    return self._clean_reply(raw)
+
+            except Exception:
+                if attempt < max_retries:
+                    wait = min(2 ** attempt, 8)
+                    logger.warning(f"LLM 调用失败，{wait} 秒后重试 ({attempt + 1}/{max_retries + 1})")
+                    time.sleep(wait)
+                    continue
+                logger.warning("LLM 调用失败", exc_info=True)
+                from src.ui.ux_helpers import UXHelper
+                return UXHelper.format_error(
+                    title="回复生成失败",
+                    message="无法连接到 AI 服务，请稍后重试。",
+                    solution="1. 检查网络连接\n2. 确认 API Key 有效\n3. 稍后重试",
                 )
-                raw = resp.choices[0].message.content or ""
-                return self._clean_reply(raw)
-
-            if self.provider == "anthropic":
-                system_text = ""
-                chat_messages: list[dict] = []
-                for m in messages:
-                    if m["role"] == "system":
-                        system_text = m["content"]
-                    else:
-                        chat_messages.append(m)
-
-                resp = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=150,
-                    system=system_text,
-                    messages=chat_messages,
-                )
-                raw = resp.content[0].text
-                return self._clean_reply(raw)
-
-        except Exception:
-            logger.warning("LLM 调用失败", exc_info=True)
-            return "抱歉，回复生成失败，请稍后重试。如果问题持续，请检查网络或 API 配置。"
 
         return "不支持的 API 提供商"

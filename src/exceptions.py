@@ -91,6 +91,66 @@ class RerankError(XinyiBaseError):
         self.model = model
 
 
+def exc_to_actionable_msg(exc: Exception) -> tuple[str, str | None]:
+    """将异常转换为（简化消息, 可选操作建议）。
+
+    Returns:
+        (user_facing_message, optional_action_url_or_command)
+
+    Example:
+        >>> msg, action = exc_to_actionable_msg(DecryptionError(...))
+        >>> if action:
+        ...     print(f"{msg} → {action}")
+    """
+    if isinstance(exc, DecryptionError):
+        if exc.reason == "xcode_missing":
+            return (
+                "缺少 Xcode 命令行工具",
+                "在终端运行：xcode-select --install"
+            )
+        if exc.reason == "db_locked":
+            return (
+                "微信数据库被占用",
+                "关闭微信后重试"
+            )
+        if exc.reason == "permission":
+            return (
+                "文件权限不足",
+                "检查 data/raw 目录的读写权限"
+            )
+    if isinstance(exc, ConfigError):
+        if exc.missing_key:
+            return (
+                f"缺少配置项：{exc.missing_key}",
+                f"在 config.yaml 或 .env 中添加 {exc.missing_key}"
+            )
+    if isinstance(exc, APIClientError):
+        if exc.status_code == 401:
+            return (
+                "API Key 无效或已过期",
+                "前往 OpenAI / Anthropic 官网重新获取 API Key"
+            )
+        if exc.status_code == 429:
+            return (
+                "API 请求频率超限",
+                "等待 1-2 分钟后重试，或升级 API 套餐"
+            )
+        if exc.status_code and exc.status_code >= 500:
+            return (
+                "AI 服务端错误（非本地问题）",
+                "等待服务恢复后重试，可访问 status.openai.com 查看状态"
+            )
+
+    # 通用处理
+    msg = exc_to_user_msg(exc)
+    if isinstance(exc, XinyiBaseError) and exc.hint:
+        first_line = exc.hint.split("。")[0]
+        if first_line:
+            return msg, first_line
+
+    return msg, None
+
+
 def exc_to_user_msg(exc: Exception) -> str:
     """将任意异常转换为用户友好的短提示。"""
     if isinstance(exc, XinyiBaseError):
@@ -116,6 +176,19 @@ def exc_to_user_msg(exc: Exception) -> str:
         return f"API 返回为空（{exc_type}）。请检查 API Key 和网络连接"
     if "json" in lower and ("decode" in lower or "parse" in lower):
         return f"API 响应格式解析失败（{exc_type}）。请检查 API 返回格式"
+
+    # 新增：streamlit / uvicorn 特定错误的友好提示
+    if any(k in lower for k in ["uvicorn", "starlette", "websockets", "httpx"]):
+        return f"网络服务错误（{exc_type}）。请重启应用：停止当前进程后重新运行 python src/app.py"
+
+    # 新增：ChromaDB 特定错误
+    if "chromadb" in lower or "collection" in lower:
+        if "persist" in lower:
+            return "向量数据库持久化失败。可尝试删除 data/chroma_db 目录后重启应用。"
+
+    # 新增：文件不存在类错误
+    if exc_type == "FileNotFoundError" or "No such file" in lower:
+        return f"找不到必要文件（{exc_type}）。请检查配置和数据文件是否完整"
 
     # Fallback — keep full message, truncate only at 150 chars to avoid UI overflow
     fallback_msg = f"{exc_type}：{exc_str}" if exc_str else f"操作失败（{exc_type or 'UnknownError'}）"
