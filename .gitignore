@@ -47,6 +47,10 @@ build/
 .venv/
 venv/
 
+# 发布包（本地构建，勿提交）
+/xinyi-macos.zip
+/xinyi-windows.zip
+
 # 系统
 .DS_Store
 Thumbs.db

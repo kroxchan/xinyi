@@ -384,6 +384,14 @@ class ChatEngine:
                                 yield "", event.delta.text
                     return
 
+                else:
+                    yield "", UXHelper.format_error(
+                        title="不支持的对话模型提供方",
+                        message=f"当前 provider={self.provider!r}，流式回复仅支持 openai / gemini / anthropic。",
+                        solution="请在 config.yaml 的 api 段将 provider 设为上述之一，并检查模型名称。",
+                    )
+                    return
+
             except Exception as e:
                 logger.warning("LLM stream error (attempt %d/%d): %s", attempt, max_retries, e)
                 if attempt < max_retries:

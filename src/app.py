@@ -1,7 +1,34 @@
 from __future__ import annotations
 
-import os as _os, sys as _sys
-_project_root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
+import os as _os
+import sys as _sys
+from pathlib import Path
+
+
+def _resolve_project_root() -> str:
+    """开发环境：源码根目录。打包后：可写目录（.app 旁或 Application Support）。"""
+    if getattr(_sys, "frozen", False):
+        exe = Path(_sys.executable).resolve()
+        if _sys.platform == "darwin":
+            # .../xinyi.app/Contents/MacOS/xinyi
+            if exe.parent.name == "MacOS" and exe.parent.parent.name == "Contents":
+                bundle = exe.parent.parent.parent
+                beside = bundle.parent
+                if beside.exists() and _os.access(str(beside), _os.W_OK):
+                    return str(beside)
+                support = Path.home() / "Library" / "Application Support" / "xinyi"
+                support.mkdir(parents=True, exist_ok=True)
+                return str(support)
+        parent = exe.parent
+        if parent.exists() and _os.access(str(parent), _os.W_OK):
+            return str(parent)
+        support = Path.home() / ".xinyi"
+        support.mkdir(parents=True, exist_ok=True)
+        return str(support)
+    return _os.path.abspath(_os.path.join(_os.path.dirname(__file__), ".."))
+
+
+_project_root = _resolve_project_root()
 if _project_root not in _sys.path:
     _sys.path.insert(0, _project_root)
 _os.chdir(_project_root)
@@ -11,7 +38,6 @@ import logging
 import random
 import threading
 import time as _time
-from pathlib import Path
 
 import yaml
 
@@ -37,10 +63,21 @@ import gradio as gr
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Paths resolved relative to this source file — not cwd
-_APP_DIR = Path(__file__).resolve().parent.parent
+# 可写根目录（打包后指向 .app 同级或 Application Support，而非 bundle 内只读路径）
+_APP_DIR = Path(_project_root).resolve()
+
+
+def _bundled_file(name: str) -> Path:
+    """PyInstaller 打入 _MEIPASS 的只读资源；开发环境用项目根目录。"""
+    if getattr(_sys, "frozen", False) and hasattr(_sys, "_MEIPASS"):
+        p = Path(_sys._MEIPASS) / name
+        if p.exists():
+            return p
+    return _APP_DIR / name
+
+
 CONFIG_PATH = _APP_DIR / "config.yaml"
-CONFIG_EXAMPLE = _APP_DIR / "config.example.yaml"
+CONFIG_EXAMPLE = _bundled_file("config.example.yaml")
 
 # ---------------------------------------------------------------------------
 # Initialization (lazy — no heavy model loading at import time)

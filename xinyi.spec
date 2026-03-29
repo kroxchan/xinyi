@@ -26,6 +26,10 @@ else:
 hiddenimports = [
     # Core
     "chromadb",
+    "chromadb.api",
+    "chromadb.api.rust",
+    "chromadb.api.types",
+    "chromadb.api.models",
     "gradio",
     "openai",
     "anthropic",
@@ -153,6 +157,7 @@ datas = [
 ]
 datas += collect_data_files("gradio")
 datas += collect_data_files("gradio_client")
+datas += collect_data_files("chromadb")
 
 module_collection_mode = {
     "gradio": "pyz+py",
@@ -226,6 +231,8 @@ app = BUNDLE(
         "LSMinimumSystemVersion": "10.15",
         "NSHighResolutionCapable": True,
         "NSPrincipalClass": "NSApplication",
+        # Not a menu-bar-only app — show in Dock so macOS doesn't kill it
+        "LSUIElement": False,
     },
     pyz=None,
 )
