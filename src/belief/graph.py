@@ -61,6 +61,19 @@ class BeliefGraph:
             raise KeyError(f"Belief not found: {belief_id}")
         self.beliefs[belief_id].update(updates)
         self.beliefs[belief_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+        if self.embedder is not None and {"topic", "stance"} & set(updates):
+            text = self.beliefs[belief_id].get("topic", "") + " " + self.beliefs[belief_id].get("stance", "")
+            self._embeddings[belief_id] = self.embedder.embed_single(text)
+
+    def delete_belief(self, belief_id: str) -> None:
+        if belief_id not in self.beliefs:
+            raise KeyError(f"Belief not found: {belief_id}")
+        self.beliefs.pop(belief_id, None)
+        self._embeddings.pop(belief_id, None)
+        self.contradictions = [
+            c for c in self.contradictions
+            if c[0] != belief_id and c[1] != belief_id
+        ]
 
     def query_by_topic(self, topic: str, top_k: int = 5) -> list[dict]:
         if self.embedder is not None:

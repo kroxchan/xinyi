@@ -1991,21 +1991,101 @@ def save_contact_relationship(wxid: str, relationship: str):
     )
 
 
-def query_beliefs(topic: str) -> list[list[str]]:
+def _belief_rows(topic: str) -> list[dict]:
     if components is None:
-        return [["系统未初始化", "", "", "", ""]]
+        return []
     bg = components["belief_graph"]
     beliefs = bg.query_by_topic(topic) if topic.strip() else bg.query_all()
+    return beliefs
+
+
+def _belief_choice_label(belief: dict) -> str:
+    topic = str(belief.get("topic", "")).strip() or "（无主题）"
+    stance = str(belief.get("stance", "")).strip()
+    if len(stance) > 24:
+        stance = stance[:24] + "..."
+    return f"{belief.get('id', '')} | {topic} | {stance}"
+
+
+def query_beliefs(topic: str) -> list[list[str]]:
+    if components is None:
+        return [["系统未初始化", "", "", "", "", ""]]
+    beliefs = _belief_rows(topic)
     rows = []
     for b in beliefs:
         rows.append([
+            b.get("id", ""),
             b.get("topic", ""),
             b.get("stance", ""),
             b.get("condition", ""),
             str(b.get("confidence", "")),
             b.get("source", ""),
         ])
-    return rows if rows else [["暂无信念数据", "", "", "", ""]]
+    return rows if rows else [["暂无信念数据", "", "", "", "", ""]]
+
+
+def belief_editor_choices(topic: str) -> gr.update:
+    if components is None:
+        return gr.update(choices=[], value=None)
+    beliefs = _belief_rows(topic)
+    choices = [(_belief_choice_label(b), b.get("id", "")) for b in beliefs if b.get("id")]
+    value = choices[0][1] if choices else None
+    return gr.update(choices=choices, value=value)
+
+
+def refresh_belief_editor(search: str):
+    update = belief_editor_choices(search)
+    value = update.get("value") if isinstance(update, dict) else None
+    if not value:
+        return update, "", "", "", "", "", "没有可编辑的信念，请先训练或调整搜索条件"
+    topic, stance, condition, confidence, source, status = load_belief_editor(value)
+    return update, topic, stance, condition, confidence, source, status
+
+
+def load_belief_editor(belief_id: str):
+    if components is None:
+        return "", "", "", "", "", "系统未初始化"
+    if not belief_id:
+        return "", "", "", "", "", "请先选择一条信念"
+    bg = components["belief_graph"]
+    belief = bg.beliefs.get(belief_id)
+    if not belief:
+        return "", "", "", "", "", "未找到这条信念"
+    return (
+        belief.get("topic", ""),
+        belief.get("stance", ""),
+        belief.get("condition", ""),
+        str(belief.get("confidence", "")),
+        belief.get("source", ""),
+        f"已载入 {belief_id}",
+    )
+
+
+def save_belief_editor(search: str, belief_id: str, topic: str, stance: str, condition: str, confidence: str, source: str):
+    if components is None:
+        return "系统未初始化", query_beliefs(search), belief_editor_choices(search)
+    if not belief_id:
+        return "请先选择一条信念", query_beliefs(search), belief_editor_choices(search)
+    bg = components["belief_graph"]
+    if belief_id not in bg.beliefs:
+        return "未找到这条信念", query_beliefs(search), belief_editor_choices(search)
+    try:
+        conf = float(confidence)
+    except ValueError:
+        return "置信度必须是数字", query_beliefs(search), belief_editor_choices(search)
+    conf = max(0.0, min(1.0, conf))
+    bg.update_belief(
+        belief_id,
+        {
+            "topic": topic.strip(),
+            "stance": stance.strip(),
+            "condition": condition.strip(),
+            "confidence": conf,
+            "source": source.strip() or "manual_edit",
+        },
+    )
+    bg.save()
+    return f"已保存 {belief_id}", query_beliefs(search), belief_editor_choices(search)
 
 
 # ---------------------------------------------------------------------------
@@ -3975,12 +4055,108 @@ def build_ui() -> gr.Blocks:
                     )
                     belief_btn = gr.Button("查询", scale=1)
                 belief_table = gr.DataFrame(
-                    headers=["主题", "立场", "前提条件", "置信度", "来源"],
+                    value=query_beliefs("") if components and components.get("belief_graph") else None,
+                    headers=["ID", "主题", "立场", "前提条件", "置信度", "来源"],
                     interactive=False,
                     wrap=True,
                 )
                 belief_btn.click(fn=query_beliefs, inputs=belief_search, outputs=belief_table)
                 belief_search.submit(fn=query_beliefs, inputs=belief_search, outputs=belief_table)
+                gr.Markdown("---\n#### 手动修正信念")
+                with gr.Group():
+                    belief_select = gr.Dropdown(
+                        label="选择要编辑的信念",
+                        choices=[],
+                        value=None,
+                        allow_custom_value=False,
+                    )
+                    with gr.Row():
+                        belief_edit_topic = gr.Textbox(label="主题")
+                        belief_edit_confidence = gr.Textbox(label="置信度", placeholder="0.0 - 1.0")
+                    belief_edit_stance = gr.Textbox(label="立场", lines=3)
+                    belief_edit_condition = gr.Textbox(label="前提条件", lines=2)
+                    belief_edit_source = gr.Textbox(label="来源", placeholder="manual_edit")
+                    belief_edit_status = gr.Markdown(value="*先搜索或点击查询，再选择一条信念进行编辑*")
+                    with gr.Row():
+                        belief_refresh_editor_btn = gr.Button("刷新可编辑列表", scale=1)
+                        belief_save_btn = gr.Button("保存修改", variant="primary", scale=1)
+                    belief_btn.click(
+                        fn=refresh_belief_editor,
+                        inputs=belief_search,
+                        outputs=[
+                            belief_select,
+                            belief_edit_topic,
+                            belief_edit_stance,
+                            belief_edit_condition,
+                            belief_edit_confidence,
+                            belief_edit_source,
+                            belief_edit_status,
+                        ],
+                    )
+                    belief_search.submit(
+                        fn=refresh_belief_editor,
+                        inputs=belief_search,
+                        outputs=[
+                            belief_select,
+                            belief_edit_topic,
+                            belief_edit_stance,
+                            belief_edit_condition,
+                            belief_edit_confidence,
+                            belief_edit_source,
+                            belief_edit_status,
+                        ],
+                    )
+                    belief_refresh_editor_btn.click(
+                        fn=refresh_belief_editor,
+                        inputs=belief_search,
+                        outputs=[
+                            belief_select,
+                            belief_edit_topic,
+                            belief_edit_stance,
+                            belief_edit_condition,
+                            belief_edit_confidence,
+                            belief_edit_source,
+                            belief_edit_status,
+                        ],
+                    )
+                    belief_select.change(
+                        fn=load_belief_editor,
+                        inputs=belief_select,
+                        outputs=[
+                            belief_edit_topic,
+                            belief_edit_stance,
+                            belief_edit_condition,
+                            belief_edit_confidence,
+                            belief_edit_source,
+                            belief_edit_status,
+                        ],
+                    )
+                    belief_save_btn.click(
+                        fn=save_belief_editor,
+                        inputs=[
+                            belief_search,
+                            belief_select,
+                            belief_edit_topic,
+                            belief_edit_stance,
+                            belief_edit_condition,
+                            belief_edit_confidence,
+                            belief_edit_source,
+                        ],
+                        outputs=[belief_edit_status, belief_table, belief_select],
+                    )
+                    demo.load(
+                        fn=refresh_belief_editor,
+                        inputs=belief_search,
+                        outputs=[
+                            belief_select,
+                            belief_edit_topic,
+                            belief_edit_stance,
+                            belief_edit_condition,
+                            belief_edit_confidence,
+                            belief_edit_source,
+                            belief_edit_status,
+                        ],
+                    )
 
             # ================================================================
             # Tab: Memory Bank
