@@ -21,6 +21,102 @@
 
 ---
 
+## 安装与运行
+
+**怎么选？** 不想装 Python → 用 **安装包**；要解密本机微信 → 用 **源码环境**（Windows 需管理员）；已有解密好的 `data/` → 可用 **Docker**。
+
+### 方式一：安装包（推荐，macOS / Windows）
+
+适合绝大多数用户：无需 Python，双击运行，启动后会**尝试自动打开浏览器**访问控制台（默认 `http://127.0.0.1:7872`；若未弹出请手动打开）。
+
+👉 [Releases 下载最新版](https://github.com/kroxchan/xinyi/releases/latest)
+
+| 系统 | 文件 | 说明 |
+|------|------|------|
+| macOS | `xinyi-macos.zip` | 解压后双击 `xinyi.app`；若提示未识别开发者：系统设置 → 隐私与安全性 → **仍要打开** |
+| Windows | `xinyi-windows.zip` | 解压后双击 `xinyi.exe`；会显示**黑色控制台窗口**（日志输出），请勿关闭 |
+
+**配置文件与数据放哪？**
+
+- 安装包会在 **可写目录** 下自动生成 `config.yaml` 和 `data/`（与 macOS 上 `.app` 同级的文件夹；若该目录无写权限，macOS 会退回到 `~/Library/Application Support/xinyi`）。
+- 首次运行若没有配置，会从内置模板复制 `config.example.yaml`。在界面 **设置 / 系统** 中填写 API Key 并保存即可。
+
+更细的图文步骤见 [INSTALL.md](INSTALL.md)。
+
+---
+
+### 方式二：源码安装（支持微信解密）
+
+#### 环境要求
+
+- Python **3.9+**（CI 使用 3.11；`pyproject.toml` 中 briefcase 声明为 ≥3.10，建议 3.10+）
+- macOS / Windows / Linux
+- 任意 **OpenAI 兼容** API（OpenAI、Anthropic、DeepSeek、硅基流动等）
+
+#### 安装依赖
+
+```bash
+git clone https://github.com/kroxchan/xinyi.git
+cd xinyi
+pip install -r requirements.txt
+```
+
+#### 配置
+
+```bash
+cp .env.example .env
+# 编辑 .env，填入 API Key
+```
+
+或：
+
+```bash
+cp config.default.yaml config.yaml
+# 编辑 config.yaml：api_key、base_url、model 等
+```
+
+> `.env` 与 `config.yaml` 已在 `.gitignore` 中，不会被提交。
+
+#### 启动
+
+```bash
+# 推荐（与 run.sh 一致）
+python -m src
+
+# 亦可
+python src/app.py
+```
+
+浏览器访问 **http://localhost:7872**（或日志里打印的地址），按向导：**连接 → 选 TA → 训练模式 → 学习**。
+
+> 首次训练会自动下载嵌入 / 重排 / 情感等模型；国内可设 `HF_ENDPOINT=https://hf-mirror.com` 再启动以加速 Hugging Face 下载。
+
+**Windows 解密微信数据**：需 **管理员** 终端（Win+X → PowerShell 管理员）再运行上述命令。
+
+---
+
+### 方式三：Docker（不解密微信）
+
+容器内**无法**完成微信内存解密。仅适合已有处理好的 `data/` 或使用外部解密流程的用户。
+
+```bash
+docker build -t xinyi .
+docker run -it -p 7872:7872 \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/data:/app/data \
+  xinyi
+```
+
+或使用 `docker-compose`（先准备 `config.yaml`）：
+
+```bash
+cp config.default.yaml config.yaml
+# 编辑 config.yaml 填入 API Key
+docker-compose up
+```
+
+---
+
 ## 两种训练模式
 
 启动后在「选择 TA」页面选定聊天对象，然后选择训练模式：
@@ -167,119 +263,23 @@
 
 ---
 
-## 快速开始
+## 工程化与近期迭代
 
-### 方式一：原生环境（支持微信解密）
-
-#### 环境要求
-
-- Python 3.9+（推荐 3.11）
-- macOS / Windows / Linux
-- 一个 OpenAI 兼容的 API Key（OpenAI / Claude / DeepSeek / 国内中转均可）
-
-#### 安装
-
-```bash
-git clone https://github.com/kroxchan/xinyi.git
-cd xinyi
-pip install -r requirements.txt
-```
-
-#### 配置
-
-```bash
-cp .env.example .env
-# 编辑 .env，填入 API Key
-```
-
-或复制默认配置：
-
-```bash
-cp config.default.yaml config.yaml
-# 编辑 config.yaml，填入 api_key、base_url、model
-```
-
-> `.env` 和 `config.yaml` 都在 .gitignore 中，不会被提交。
-
-#### 启动
-
-```bash
-# macOS / Linux
-python src/app.py
-
-# Windows（需管理员终端，用于解密微信数据）
-# Win+X → "PowerShell（管理员）" → cd 到项目目录
-python src/app.py
-```
-
-浏览器打开 http://localhost:7872 ，跟向导走：**连接 → 选择 TA → 选训练模式 → 学习** → 完成。
-
-> 首次训练时系统会自动检查并下载嵌入、重排、情感模型；国内网络会优先尝试 `hf-mirror.com`，下载完成后后续启动不再需要联网。
-
----
-
-### 方式二：Docker（无需 Python 环境，适合已有解密数据的用户）
-
-> ⚠️ Docker 容器内**不支持**微信数据解密。如需解密，请用原生环境方式。
-
-```bash
-# 构建镜像
-docker build -t xinyi .
-
-# 启动（需把 config.yaml 和 data 目录映射进去）
-docker run -it -p 7872:7872 \
-  -v $(pwd)/config.yaml:/app/config.yaml:ro \
-  -v $(pwd)/data:/app/data \
-  xinyi
-```
-
-或用 docker-compose：
-
-```bash
-cp config.default.yaml config.yaml
-# 编辑 config.yaml 填入 API Key
-docker-compose up
-```
-
----
-
-### 方式三：下载安装包（无需 Python 环境）
-
-直接下载打包好的安装包，双击即可运行。macOS / Windows 安装包由 GitHub Actions 自动构建并上传到 Release：
-
-👉 [前往 Releases 下载](https://github.com/kroxchan/xinyi/releases/latest)
-
-| 操作系统 | 下载文件 |
-|----------|----------|
-| macOS | `xinyi-macos.zip` |
-| Windows | `xinyi-windows.zip` |
-
-**macOS：** 解压后双击 `xinyi.app`，首次打开按提示允许运行（系统设置 → 隐私与安全性 → 仍要打开）。
-
-**Windows：** 解压后双击 `xinyi.exe`，会弹出一个黑色日志窗口（正常现象，勿关闭）。
-
-启动后自动打开浏览器 `http://localhost:7872`，按向导配置 API Key 即可使用。
-
-详细步骤见 [INSTALL.md](https://github.com/kroxchan/xinyi/blob/main/INSTALL.md)。
-
----
-
-## 工程化升级（本次迭代）
-
-本次更新在保持核心能力不变的前提下，大幅改善了可维护性和开发体验：
+在保持核心能力不变的前提下，持续改进可维护性、体验与打包分发：
 
 | 模块 | 改动 | 说明 |
 |------|------|------|
-| Tab 模块化 | 已引入 `src/ui/tabs/` 基础模块 | 逐步把 UI 从 `app.py` 中拆分出去 |
-| 日志体系 | `src/logging_config.py`（loguru + 结构化日志） | 关键节点全链路埋点，可输出到文件 |
-| 异常规范化 | `src/exceptions.py` | 语义化异常替代模糊 try-catch，报错信息精准可操作 |
-| 测试体系 | `tests/`（pytest + mock） | 检索、重排、清洗、情感分类核心逻辑有覆盖 |
-| 配置分层 | `src/config.py`（pydantic BaseSettings） | .env / config.yaml 分层，支持 dev/prod 切换 |
-| 隐私脱敏 | `src/data/privacy_redactor.py` | 微信号、位置、转账金额等可配置脱敏 |
-| API 热重载 | 保存 API 配置后无需手动重启 | 配置页一键保存，分身引擎自动重建 |
-| 双小模型接入 | `reranker + emotion_tagger` | 训练时自动校验下载，检索时重排并按情绪加权 |
-| 校准题库升级 | 理论化默认初始化题 + 动态追问题 | 新用户可直接开始校准，后续再由信念矛盾生成追问题 |
-| 内心地图修正 | 支持手动编辑信念图谱 | 当 AI 归纳不准时，用户可直接修正主题/立场/条件/置信度 |
+| Tab 模块化 | `src/ui/tabs/` | UI 按功能页拆分；`app.py` 仍承担组装与全局状态 |
+| 日志体系 | `src/logging_config.py` | 结构化日志，可落盘 |
+| 异常与提示 | `src/exceptions.py`、`src/ui/ux_helpers.py` | 语义化异常 + 统一错误/进度卡片；对话流式失败带重试提示 |
+| 测试 | `tests/`（pytest） | 清洗、检索、嵌入、信念图、异常等单元测试 |
+| 配置 | `src/config.py` + `config.yaml` | Pydantic 校验；支持 `XINYI_ENV` 等环境开关 |
+| 隐私脱敏 | `src/data/privacy_redactor.py` | 手机号、证件号等可配置脱敏规则 |
+| API 热重载 | 设置页保存 | 保存 API 配置后自动重建 OpenAI/Anthropic 客户端与顾问引擎 |
+| 小模型 | `reranker`、`emotion_tagger` | 重排与可选情感分块，训练/检索阶段接入 |
+| 校准与信念 | `cognitive/`、`belief/` | 默认情境题库 + 矛盾检测与追问；信念支持手动编辑 |
+| 打包 | PyInstaller、`xinyi.spec` / `xinyi-windows.spec` | 安装包在可写目录生成 `config.yaml`/`data/`；启动时 `inbrowser` 打开控制台 |
+| CI | `.github/workflows/build.yml` | push `main` 构建 macOS/Windows _zip 并更新 Release（需配置 `GH_TOKEN` Secret） |
 
 ---
 
@@ -323,35 +323,109 @@ docker-compose up
 
 ---
 
-## 常见问题
+## 常见问题（FAQ）
 
-**支持哪些 API？**
-OpenAI、Anthropic、DeepSeek，以及所有兼容 OpenAI 格式的中转服务（硅基流动、火山引擎等均可）。
+### 安装与运行
 
-**需要多少聊天记录？**
-至少 30 条与对象的有效聊天。300 条以上效果明显提升，1000 条以上趋于稳定。
+**Q：安装包和源码运行有什么区别？**  
+A：安装包内置 Python 与依赖，双击即可；**只有源码环境**能在本机完成微信解密（Windows 还需管理员终端）。Docker 不解密。
 
-**两种模式能同时用吗？**
-一次只能训练一种。想两个都体验，克隆一份项目分别训练。
+**Q：控制台地址不是 7872 怎么办？**  
+A：默认 Gradio 使用 **7872**；若端口被占用，日志里会打印实际端口。安装包与 `python -m src` 均在启动时尝试 **`inbrowser` 自动打开浏览器**；若被系统拦截，请手动访问日志中的 URL。
 
-**会影响微信正常使用吗？**
-不会。解密过程只读取微信进程内存中的加密密钥，不修改微信文件或行为。
+**Q：macOS 把 app 丢进「应用程序」后，配置写到哪里？**  
+A：若 `/Applications` 下对当前用户**不可写**，程序会退回到 **`~/Library/Application Support/xinyi`** 存放 `config.yaml` 与 `data/`。若 app 在桌面/下载目录等可写位置旁，则通常写在 **与 `.app` 同级的文件夹**。
 
-**Windows 提示 Access Denied？**
-没有用管理员终端启动。Win+X → PowerShell（管理员）→ 重新运行。
+**Q：对话时一直转圈或很久才出字？**  
+A：首次调用会拉模型、建向量索引；对话走 **流式输出**，中间可能出现「思考 / 检索 / 重试」类提示。若连续失败，界面会提示检查 **API Key 与网络**；也可打开 **「系统」Tab** 看连接状态。
 
-**macOS 提示 task_for_pid failed？**
-需要调整 SIP，向导「连接」页有详细步骤。
+### 数据与训练
 
-**首次启动卡在加载嵌入模型？**
-国内网络下载 HuggingFace 模型可能较慢，可配置镜像源：
+**Q：支持哪些大模型 API？**  
+A：**OpenAI 兼容**（官方 OpenAI、多数国内中转）与 **Anthropic**（需在配置里选对 `provider`）。DeepSeek、硅基流动等只要兼容 OpenAI 的 `base_url` + Key 即可。
 
-```bash
-export HF_ENDPOINT=https://hf-mirror.com
-python src/app.py
-```
+**Q：大概要多少条聊天才有效果？**  
+A：至少约 **30 条**有效双人对话；**300+** 更明显，**1000+** 趋于稳定。具体因话题多样性而异。
 
-或预先下载模型到本地，修改 `config.yaml` 中的模型路径。
+**Q：「训练自己」和「训练对象」能同时启用吗？**  
+A：**一次只能一种**主模式。想两种都试，可用两套目录（两份安装文件夹或两份克隆仓库）分别训练。
+
+**Q：会动我的微信数据吗？**  
+A：解密阶段**只读**进程内存中的密钥并解密本地库副本，**不修改**微信客户端行为与官方数据文件（仍建议备份）。
+
+**Q：Docker 里能解密微信吗？**  
+A：**不能**。容器内无法完成本机微信内存解密，请用源码方式解密后再挂载 `data/`。
+
+### 合规与隐私
+
+**Q：聊天记录会传到你们服务器吗？**  
+A：**不会**。数据在本地 `data/`；与**你配置的 API 服务商**之间的请求见上文「隐私与数据安全」表格。
+
+---
+
+## 故障排除
+
+按现象自查（仍无法解决时，可带 **日志片段** 与系统版本提 Issue）。
+
+| 现象 | 可能原因 | 建议操作 |
+|------|----------|----------|
+| 白屏 / 无法打开网页 | 进程未起来或端口错误 | 看控制台/终端日志；换浏览器访问 `http://127.0.0.1:7872`；检查防火墙是否拦截本地端口 |
+| `Address already in use` / 端口占用 | 7872 已被占用 | 关闭旧的心译进程或其它占用程序；或改 `config`/启动参数中的端口（若你有自定义） |
+| `Access Denied`（Windows） | 解密需要提权 | **管理员** PowerShell 再运行 `python -m src` |
+| `task_for_pid failed`（macOS） | SIP / 权限未按向导配置 | 在应用内 **「连接 / 设置」** 跟提示完成微信侧步骤；必要时查阅项目 `docs` 与 decrypt 工具说明 |
+| 找不到 `config.yaml` | 工作目录不对或首次未生成 | 源码方式请在**项目根**执行命令；安装包查看 **`.app` 同级** 或 **`~/Library/Application Support/xinyi`** |
+| 嵌入模型下载极慢 / 超时 | HuggingFace 网络问题 | 终端执行 `export HF_ENDPOINT=https://hf-mirror.com` 后重启；或预先下载模型到本机并在 `config.yaml` 指定路径 |
+| ChromaDB / 权限错误 | `data/` 不可写或损坏 | 确认目录权限；可备份后删除 `data/chroma_db` 再重新训练（会丢失向量索引，需重跑学习流程） |
+| API 401 / Invalid Key | Key 错误或 `base_url` 不匹配 | 在 **设置** 中重填 Key；中转站需填对 **完整 base_url**（常以 `/v1` 结尾视服务商而定） |
+| 对话报错「不支持的 provider」 | `config.yaml` 里 `api.provider` 与客户端不一致 | 流式对话当前支持 **openai / gemini（走 OpenAI 兼容接口时）/ anthropic**；请改 `provider` 或换兼容网关 |
+| Release 无新包 / CI 红 | 仓库未配置 Secret 或构建失败 | 维护者需在 GitHub **Settings → Secrets** 配置 **`GH_TOKEN`**（`contents: write`）；在 **Actions** 页查看失败 job 日志 |
+
+**日志位置**：源码运行时日志多在**启动终端**；`config.yaml` 中可配置 `logging.dir`（默认 `logs/`）。Windows 安装包会保留**控制台窗口**便于复制报错。
+
+---
+
+## 开发者参考：配置与模块说明
+
+本仓库**没有**对外公开的 HTTP REST API；「API」主要指 **大模型服务商的 API**（通过 `config.yaml` 的 `api` 段配置）。界面由 **Gradio** 在本地起服务，浏览器访问即可。
+
+### `config.yaml` 中与「API」相关的键（概念说明）
+
+| 键 / 段 | 作用 |
+|---------|------|
+| `api.provider` | `openai` 或 `anthropic` 等，影响底层 SDK 与流式实现 |
+| `api.api_key` / `api.base_url` | 密钥与兼容网关地址（可为空表示官方默认） |
+| `api.model` | 对话主模型名 |
+| `api.headers` | 部分中转需要的额外 HTTP 头 |
+| `embedding` / `rerank` / `emotion` | 本地小模型名称与设备（CPU/CUDA） |
+
+环境变量支持在 YAML 中写 `${VAR:默认值}`；`.env` 由 `python-dotenv` 加载（见 `src/config.py`、`src/app.load_config`）。
+
+### `src/` 目录职责速查（便于读代码）
+
+| 路径 | 职责 |
+|------|------|
+| `src/__main__.py` | 入口：`load_config` → `build_ui` → `launch(inbrowser=True)` |
+| `src/app.py` | Gradio 总装：全局状态、`init_components`、`build_ui`、业务回调（体量最大） |
+| `src/config.py` | Pydantic 配置模型与 `load_config` / `get_config` |
+| `src/exceptions.py` | 业务异常类型与 `exc_to_user_msg` / `exc_to_actionable_msg` |
+| `src/logging_config.py` | 日志初始化 |
+| `src/engine/chat.py` | 主对话引擎：检索、内心独白、**流式**回复与重试 |
+| `src/engine/training.py`、`learning.py` | 训练流水线与学习循环 |
+| `src/engine/partner_advisor.py` | 关系顾问 @KK、流式接口 |
+| `src/engine/advisor_registry.py` | 顾问 / 调解器实例注册与热重载 |
+| `src/engine/session.py` | 会话管理 |
+| `src/mediation/mediator.py` | 冲突调解对话逻辑 |
+| `src/memory/*` | 嵌入、Chroma 向量库、检索、重排、MemoryBank、multi_md 多路记忆 |
+| `src/belief/*` | 信念抽取、图谱、矛盾检测 |
+| `src/personality/*` | 提示词组装、情绪跟踪、思维画像、引导文案 |
+| `src/data/*` | 微信解析、清洗、解密、分块、脱敏、`partner_config` |
+| `src/cognitive/*` | 校准任务库、主动探测、推理 |
+| `src/eval/evaluator.py` | 分身诊断评分 |
+| `src/features/*` | 冷却期、预发送、报告、本地模型预设、FTUE 等 |
+| `src/ui/tabs/*` | 各功能 Tab；`ux_helpers.py` / `styles.py` 为统一 UI 片段与样式 |
+| `src/ui/callbacks_api.py` | 设置页读写 `config.yaml`、保存后触发 `init_components` 与 registry 重载 |
+
+更细的接口以代码为准；欢迎通过 PR 补充 **docstring** 或 `docs/` 下的专题文档。
 
 ---
 
