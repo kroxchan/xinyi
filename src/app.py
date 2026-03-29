@@ -3828,9 +3828,15 @@ def build_ui() -> gr.Blocks:
                     tl = components.get("task_library")
                     if not tl:
                         return "任务库未加载", "", "", ""
+                    tl.ensure_seed_tasks()
                     task = tl.get_next_task()
                     if not task:
-                        return "**校准完成！** 所有任务已做完。可以去「心译对话」开始了。", "", "", _task_progress_html()
+                        return (
+                            "**题库初始化失败。** 默认校准题没有成功加载，请重启后重试。",
+                            "",
+                            "",
+                            _task_progress_html(),
+                        )
                     done = tl.get_completed_count()
                     num = done + 1
                     dim_name = TASK_DIMENSIONS.get(task["dimension"], task["dimension"])
