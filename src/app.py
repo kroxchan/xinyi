@@ -221,6 +221,11 @@ class TrainingRunner:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._render_fn = lambda steps: "\n".join(str(s) for s in steps)
+        self._kill_requested = False
+        self._kill_requested_time: float | None = None   # set in request_kill()
+        # (used by poll fn to show "cancelling…" state)
+        self._subprocess_pid: int | None = None   # PID of active subprocess
+        self._poll_count: int = 0                 # increments every 3s tick
 
     @classmethod
     def instance(cls):
@@ -232,11 +237,48 @@ class TrainingRunner:
         return self._thread is not None and self._thread.is_alive()
 
     def _reset(self):
+        self.cancel_subprocess()
         with self._lock:
             self.steps.clear()
             self.done = False
             self.error = None
             self.mode = "text"
+            self._kill_requested = False
+            self._kill_requested_time = None
+            self._subprocess_pid = None
+            self._poll_count = 0
+
+    def set_subprocess_pid(self, pid: int | None):
+        with self._lock:
+            self._subprocess_pid = pid
+
+    def request_kill(self):
+        self._kill_requested = True
+        self._kill_requested_time = _time.time()
+        self.cancel_subprocess()
+
+    @property
+    def kill_requested(self) -> bool:
+        return self._kill_requested
+
+    def is_subprocess_alive(self) -> bool:
+        pid = self._subprocess_pid
+        if pid is None:
+            return False
+        try:
+            _os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    def cancel_subprocess(self):
+        pid = self._subprocess_pid
+        if pid is not None:
+            try:
+                _os.kill(pid, 15)   # SIGTERM — graceful
+            except OSError:
+                pass
+            self._subprocess_pid = None
 
     def add(self, step):
         """Append a new step (thread-safe)."""
@@ -1528,8 +1570,11 @@ def _decrypt_only_pipeline(runner):
     try:
         step = _timed(runner, lambda: dec.decrypt_databases(),
                       lambda e: DS("数据库解密", True, "解密中… 已等待 {}s".format(e)))
+        # Register subprocess PID for kill tracking
+        runner.set_subprocess_pid(getattr(step, "_subprocess_pid", None))
         runner.update(step)
         if not step.ok:
+            runner.set_subprocess_pid(None)
             return
     except Exception as e:
         runner.update(DS("数据库解密", False, str(e)))
@@ -2564,6 +2609,7 @@ def build_ui() -> gr.Blocks:
                     variant="secondary" if _has_decrypted else "primary",
                     size="lg",
                 )
+                decrypt_stop_btn = gr.Button("停止解密", variant="stop", size="lg", visible=False)
                 step3_output = gr.HTML()
 
                 with gr.Accordion("高级：已有解密数据库？直接导入", open=False):
@@ -2586,43 +2632,72 @@ def build_ui() -> gr.Blocks:
 
                 decrypt_timer = gr.Timer(value=3, active=False)
 
-                def _decrypt_poll():
+                def _stop_decrypt_fn():
                     r = TrainingRunner.instance()
-                    steps = r.get_steps()
+                    if r.is_running() and r.mode == "step3":
+                        r.request_kill()
+                        return "已发送停止信号，进程结束后请重试解密"
+                    return "解密未在运行"
+
+                def _decrypt_poll():
+                    from src.data.decrypt import DecryptStep as DS
+                    r = TrainingRunner.instance()
+                    steps = list(r.get_steps())
                     # Timer stays active only while a job is actually running
                     active = r.is_running() and not r.done
                     skip = gr.update()
                     # outputs order: step1_output, step3_output, decrypt_timer,
                     #                setup1_status, step3_decrypt_banner, step1_status_html
 
+                    if r.mode == "step3":
+                        # Inject kill SIGKILL if requested but subprocess still alive
+                        if r.kill_requested and r.is_subprocess_alive():
+                            _os.kill(r._subprocess_pid, 9)   # SIGKILL
+                            r.set_subprocess_pid(None)
+
+                        # Inject long-running warning every 200 ticks (≈10 min)
+                        r._poll_count += 1
+                        if r._poll_count % 200 == 0 and r.is_subprocess_alive():
+                            r.add(DS("⚠️ 仍在运行", True,
+                                      "解密进程仍在进行中，请耐心等待…（已运行约 {} 分钟）".format(
+                                          r._poll_count * 3 // 60)))
+                        elif not r.is_running() and not r.done:
+                            r._poll_count = 0   # reset for next run
+                        steps = list(r.get_steps())
+
                     if not steps:
-                        return skip, skip, gr.Timer(active=active), skip, skip, skip
+                        return (skip, skip, gr.Timer(active=active),
+                                skip, skip, skip, gr.update())
 
                     html = _step_html(steps)
 
                     if r.mode == "step1":
-                        # Only update step1_output; never touch step3_output
                         s1_status = skip
                         if r.done:
                             s1_status = '<span style="color:#65a88a">✓ 解密工具已就绪。</span>'
-                        return html, skip, gr.Timer(active=active), skip, skip, s1_status
+                        return (html, skip, gr.Timer(active=active),
+                                skip, skip, s1_status, gr.update())
 
                     if r.mode == "step3":
-                        # Only update step3_output; never touch step1_output
                         st_up = skip
                         ban_up = skip
+                        stop_vis = gr.update(visible=active)
                         if r.done:
                             st_up = _setup1_status_html()
                             ban_up = _step3_decrypt_banner_html()
-                        return skip, html, gr.Timer(active=active), st_up, ban_up, skip
+                            r._poll_count = 0   # reset
+                            stop_vis = gr.update(visible=False)
+                        return (skip, html, gr.Timer(active=active),
+                                st_up, ban_up, skip, stop_vis)
 
-                    return skip, skip, gr.Timer(active=active), skip, skip, skip
+                    return (skip, skip, gr.Timer(active=active),
+                            skip, skip, skip, gr.update())
 
                 # Note: decrypt_timer NOT in tick outputs — tick updates active state of
                 # the same instance without replacement, so tick stays registered
                 decrypt_timer.tick(
                     fn=_decrypt_poll,
-                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner, step1_status_html],
+                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner, step1_status_html, decrypt_stop_btn],
                 )
 
                 # step1_btn: update UI then activate timer via .then() chain
@@ -2635,6 +2710,10 @@ def build_ui() -> gr.Blocks:
                 step3_btn.click(fn=run_step3_decrypt_only, outputs=[step3_output]).then(
                     fn=lambda: gr.Timer(active=True),
                     outputs=[decrypt_timer],
+                )
+                decrypt_stop_btn.click(
+                    fn=_stop_decrypt_fn,
+                    outputs=[step3_output],
                 )
                 def _link_external_dir_ui(path_str: str):
                     h, s = link_external_dir(path_str)

@@ -547,25 +547,36 @@ class WeChatDecryptor:
         with open(config_file, "w") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
 
+        import subprocess as _subprocess
+
         try:
-            result = subprocess.run(
+            proc = _subprocess.Popen(
                 [sys.executable, str(script)],
-                capture_output=True,
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.PIPE,
                 text=True,
                 cwd=str(repo_abs),
             )
-            if result.returncode != 0:
-                stderr = result.stderr
-                if "Crypto" in stderr or "pycryptodome" in stderr:
-                    return DecryptStep(
-                        "解密数据库", False,
-                        "pycryptodome 缺失，请回到第 1 步重新准备解密工具",
-                        stderr[-500:],
-                    )
-                return DecryptStep("解密数据库", False, "解密失败", stderr[-500:])
+            stdout, stderr = proc.communicate()
+            step = DecryptStep("解密数据库", False, "")   # temp; will overwrite
+            step._subprocess_pid = proc.pid
+            step._stdout = stdout
 
-            db_count = len(list(self.output_dir.rglob("*.db")))
-            return DecryptStep("解密数据库", True, "解密完成，{} 个数据库文件".format(db_count))
+            if proc.returncode != 0:
+                if "Crypto" in stderr or "pycryptodome" in stderr:
+                    step.ok = False
+                    step.summary = "pycryptodome 缺失，请回到第 1 步重新准备解密工具"
+                    step.detail = stderr[-500:]
+                else:
+                    step.ok = False
+                    step.summary = "解密失败"
+                    step.detail = stderr[-500:]
+            else:
+                db_count = len(list(self.output_dir.rglob("*.db")))
+                step.ok = True
+                step.summary = "解密完成，{} 个数据库文件".format(db_count)
+
+            return step
         except Exception as e:
             return DecryptStep("解密数据库", False, "解密异常：" + str(e))
 
