@@ -89,76 +89,72 @@ jobs:
             echo "tag_name=${{ github.ref }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
             echo "mode=main" >> $GITHUB_OUTPUT
-            echo "tag_name=v1.0.1" >> $GITHUB_OUTPUT
+            echo "tag_name=v1.0.2" >> $GITHUB_OUTPUT
           else
             echo "mode=dispatch" >> $GITHUB_OUTPUT
-            echo "tag_name=v1.0.1" >> $GITHUB_OUTPUT
+            echo "tag_name=v1.0.2" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to Release (dispatch mode - overwrite v1.0.1)
+      - name: Upload to Release (dispatch mode - overwrite v1.0.2)
         if: steps.release_mode.outputs.mode == 'dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.1
-          name: xinyi v1.0.1
+          tag_name: v1.0.2
+          name: xinyi v1.0.2
           draft: false
           prerelease: false
           overwrite_files: true
           body: |
-            xinyi v1.0.1 正式发布
+            xinyi v1.0.2
 
-            支持 macOS / Windows，下载对应安装包，双击即可运行，输入 API Key 即可使用。
+            支持 macOS / Windows，下载对应安装包，解压后运行；启动后会尝试打开浏览器访问控制台。
 
-            ## 下载地址
-            - macOS: xinyi-macos.zip（Apple 芯片 / Intel）
+            ## 下载
+            - macOS: xinyi-macos.zip
             - Windows: xinyi-windows.zip
 
-            ## 使用方法
-            1. 下载并解压对应平台的安装包
-            2. 双击 xinyi.app（macOS）或运行 xinyi.exe（Windows）
-            3. 打开浏览器访问 http://localhost:7872
-            4. 在设置页面填入你的 API Key
+            ## 使用
+            1. 解压后运行 xinyi.app（macOS）或 xinyi.exe（Windows）
+            2. 浏览器访问 http://localhost:7872（若未自动打开请手动打开）
+            3. 在「连接 / 设置」中填写 API Key 并保存
 
-            ## 更新内容
-            - 修复旧版本 32.7 闪退问题
-            - 修复 API key 配置问题
-            - 改进数据隐私说明
-            - 优化 UI 体验
+            ## 本版更新
+            - 修复：保存 API 后运行时未真正切换新 Key（全局重载与可写目录 config 路径）
+            - 修复：安装包内 `config.yaml` 写入路径错误导致的初始化异常
+            - 连接页已配置 API 时仍可编辑并重新保存
           files: |
             artifacts/xinyi-macos/xinyi-macos.zip
             artifacts/xinyi-windows/xinyi-windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
 
-      - name: Upload to Release (main branch - overwrite v1.0.1)
+      - name: Upload to Release (main branch - overwrite v1.0.2)
         if: steps.release_mode.outputs.mode == 'main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.1
-          name: xinyi v1.0.1
+          tag_name: v1.0.2
+          name: xinyi v1.0.2
           draft: false
           prerelease: false
           overwrite_files: true
           body: |
-            xinyi v1.0.1 正式发布
+            xinyi v1.0.2
 
-            支持 macOS / Windows，下载对应安装包，双击即可运行，输入 API Key 即可使用。
+            支持 macOS / Windows，下载对应安装包，解压后运行；启动后会尝试打开浏览器访问控制台。
 
-            ## 下载地址
-            - macOS: xinyi-macos.zip（Apple 芯片 / Intel）
+            ## 下载
+            - macOS: xinyi-macos.zip
             - Windows: xinyi-windows.zip
 
-            ## 使用方法
-            1. 下载并解压对应平台的安装包
-            2. 双击 xinyi.app（macOS）或运行 xinyi.exe（Windows）
-            3. 打开浏览器访问 http://localhost:7872
-            4. 在设置页面填入你的 API Key
+            ## 使用
+            1. 解压后运行 xinyi.app（macOS）或 xinyi.exe（Windows）
+            2. 浏览器访问 http://localhost:7872（若未自动打开请手动打开）
+            3. 在「连接 / 设置」中填写 API Key 并保存
 
-            ## 更新内容
-            - 修复旧版本 32.7 闪退问题
-            - 修复 API key 配置问题
-            - 改进数据隐私说明
-            - 优化 UI 体验
+            ## 本版更新
+            - 修复：保存 API 后运行时未真正切换新 Key（全局重载与可写目录 config 路径）
+            - 修复：安装包内 `config.yaml` 写入路径错误导致的初始化异常
+            - 连接页已配置 API 时仍可编辑并重新保存
           files: |
             artifacts/xinyi-macos/xinyi-macos.zip
             artifacts/xinyi-windows/xinyi-windows.zip

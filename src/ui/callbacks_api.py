@@ -13,15 +13,18 @@ from src.ui.ux_helpers import UXHelper
 
 logger = logging.getLogger(__name__)
 
-# Paths — resolved relative to app.py source file
-_APP_DIR = Path(__file__).resolve().parent.parent.parent
-CONFIG_PATH = _APP_DIR / "config.yaml"
+
+def _config_path() -> Path:
+    """与 app.py 的 CONFIG_PATH 一致。打包后不可用 __file__ 推项目根（会落到 _MEIPASS 只读区）。"""
+    from src.app import CONFIG_PATH as _cp
+
+    return _cp
 
 
 def load_config():
     import os as _os
     """Load config.yaml with ${VAR:default} env-var substitution."""
-    with open(CONFIG_PATH, encoding="utf-8") as f:
+    with open(_config_path(), encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     def _resolve(val):
@@ -48,7 +51,7 @@ def load_api_fields() -> tuple[str, str, str, str]:
     try:
         resolved = load_config()
         api = resolved.get("api", {})
-        with open(CONFIG_PATH, encoding="utf-8") as f:
+        with open(_config_path(), encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         api_raw = raw.get("api", {})
         return (
@@ -114,7 +117,7 @@ def save_api(provider: str, model: str, key: str, base_url: str) -> str:
             solution="请前往 OpenAI / Anthropic 官网获取 API Key",
         )
     try:
-        cfg = yaml.safe_load(open(CONFIG_PATH, encoding="utf-8")) or {}
+        cfg = yaml.safe_load(open(_config_path(), encoding="utf-8")) or {}
     except Exception:
         cfg = {}
     if "api" not in cfg:
@@ -125,7 +128,7 @@ def save_api(provider: str, model: str, key: str, base_url: str) -> str:
     cfg["api"]["extraction_model"] = model_stripped
     cfg["api"]["api_key"] = (key or "").strip()
     cfg["api"]["base_url"] = (base_url or "").strip() or None
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+    with open(_config_path(), "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
 
     error = _do_reinit()
