@@ -257,42 +257,103 @@ class WeChatDecryptor:
         SKIP_PKGS = {"mcp"}
 
         with open(req_file, encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
+            raw_lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
-        installed, skipped, failed = [], [], []
-        for line in lines:
-            pkg_name = line.split(">=")[0].split("<=")[0].split("<")[0].split(">")[0].split("==")[0].split("[")[0].strip()
-            if pkg_name.lower() in SKIP_PKGS:
-                skipped.append(pkg_name)
-                continue
+        # Split into already-satisfied and actually-needed lines
+        def _pkg_name(line: str) -> str:
+            import re as _re
+            return _re.split(r"[><=!\[;]", line)[0].strip().lower()
+
+        def _is_installed(line: str) -> bool:
+            """Return True if the package is already importable / satisfies the spec."""
             try:
-                r = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", line],
-                    capture_output=True, text=True, timeout=120,
-                )
-                if r.returncode == 0:
-                    installed.append(pkg_name)
-                else:
-                    failed.append(pkg_name)
-                    logger.warning("pip install %s failed: %s", line, r.stderr[-200:])
-            except subprocess.TimeoutExpired:
-                failed.append(pkg_name + "(超时)")
+                import importlib.metadata as _meta
+                from packaging.requirements import Requirement
+                req = Requirement(line)
+                dist = _meta.distribution(req.name)
+                if req.specifier:
+                    from packaging.version import Version
+                    return Version(dist.version) in req.specifier
+                return True
+            except Exception:
+                return False
+
+        skipped_compat: list[str] = []
+        already_ok:     list[str] = []
+        to_install:     list[str] = []
+
+        for line in raw_lines:
+            pname = _pkg_name(line)
+            if pname in SKIP_PKGS:
+                skipped_compat.append(pname)
+                continue
+            if _is_installed(line):
+                already_ok.append(pname)
+            else:
+                to_install.append(line)
+
+        failed: list[str] = []
+        newly_installed: list[str] = []
+
+        if to_install:
+            # Try batch install first (faster, avoids N round-trips)
+            # Try official PyPI then fall back to Tsinghua mirror for CN users
+            for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
+                cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + to_install
+                if mirror:
+                    cmd += ["-i", mirror]
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                    if r.returncode == 0:
+                        newly_installed = [_pkg_name(l) for l in to_install]
+                        to_install = []
+                        break
+                    else:
+                        logger.warning("pip batch install failed (mirror=%s): %s",
+                                       mirror, r.stderr[-300:])
+                except subprocess.TimeoutExpired:
+                    logger.warning("pip batch install timed out (mirror=%s)", mirror)
+
+            # If batch still failed, fall back to per-package install
+            if to_install:
+                for line in to_install:
+                    pname = _pkg_name(line)
+                    installed_this = False
+                    for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
+                        cmd = [sys.executable, "-m", "pip", "install", "--quiet", line]
+                        if mirror:
+                            cmd += ["-i", mirror]
+                        try:
+                            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                            if r.returncode == 0:
+                                newly_installed.append(pname)
+                                installed_this = True
+                                break
+                            logger.warning("pip install %s failed (mirror=%s): %s",
+                                           line, mirror, r.stderr[-200:])
+                        except subprocess.TimeoutExpired:
+                            logger.warning("pip install %s timed out (mirror=%s)", line, mirror)
+                    if not installed_this:
+                        failed.append(pname)
 
         detail_parts = []
-        if installed:
-            detail_parts.append("已装: " + ", ".join(installed))
-        if skipped:
-            detail_parts.append("跳过(不兼容): " + ", ".join(skipped))
+        if newly_installed:
+            detail_parts.append("新装: " + ", ".join(newly_installed))
+        if already_ok:
+            detail_parts.append("已有: " + ", ".join(already_ok))
+        if skipped_compat:
+            detail_parts.append("跳过(不兼容): " + ", ".join(skipped_compat))
         if failed:
-            detail_parts.append("失败: " + ", ".join(failed))
+            detail_parts.append("失败(不影响解密): " + ", ".join(failed))
         detail = " | ".join(detail_parts)
 
+        # Failed deps are non-fatal — decryption may still work
+        summary = "依赖安装完成"
+        if skipped_compat:
+            summary += "（跳过 {} 个不兼容包）".format(len(skipped_compat))
         if failed:
-            return DecryptStep("安装依赖", True,
-                               "部分依赖安装失败（可能不影响解密）", detail)
-        return DecryptStep("安装依赖", True,
-                           "依赖安装完成（跳过 {} 个不兼容包）".format(len(skipped)) if skipped else "依赖安装完成",
-                           detail)
+            summary += "，{} 个安装失败（可能不影响解密）".format(len(failed))
+        return DecryptStep("安装依赖", True, summary, detail)
 
     # ------------------------------------------------------------------
     # Step 3: Compile macOS scanner (macOS only)
