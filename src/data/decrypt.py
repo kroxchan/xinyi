@@ -547,18 +547,14 @@ class WeChatDecryptor:
         with open(config_file, "w") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
 
-        # Give the subprocess a generous timeout (15 min); it prints progress
-        # so the user won't think it is stuck
         try:
             result = subprocess.run(
                 [sys.executable, str(script)],
                 capture_output=True,
                 text=True,
-                timeout=900,   # 15 minutes — large chat histories need time
                 cwd=str(repo_abs),
             )
             if result.returncode != 0:
-                # Check if it's a Crypto import error
                 stderr = result.stderr
                 if "Crypto" in stderr or "pycryptodome" in stderr:
                     return DecryptStep(
@@ -570,8 +566,8 @@ class WeChatDecryptor:
 
             db_count = len(list(self.output_dir.rglob("*.db")))
             return DecryptStep("解密数据库", True, "解密完成，{} 个数据库文件".format(db_count))
-        except subprocess.TimeoutExpired:
-            return DecryptStep("解密数据库", False, "解密超时（>15min），数据量较大可尝试重新解密")
+        except Exception as e:
+            return DecryptStep("解密数据库", False, "解密异常：" + str(e))
 
     # ------------------------------------------------------------------
     # Full pipeline
