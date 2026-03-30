@@ -2533,33 +2533,152 @@ def build_ui() -> gr.Blocks:
 
                 setup_model_status.value = _refresh_model_status()
 
-                model_download_btn = gr.Button("下载所有模型", variant="primary")
-                model_download_result = gr.HTML()
+                # ── Model download UI ────────────────────────────────────────────────
+                model_download_all_btn = gr.Button("下载所有模型", variant="primary")
+                model_retry_failed_btn = gr.Button("重试失败模型", variant="secondary")
+                model_abort_btn = gr.Button("停止下载", variant="stop")
 
-                def _download_models_fn():
-                    from src.utils.model_download import download_model_once, XINYI_MODELS
-                    results = {}
-                    for m in XINYI_MODELS:
-                        download_model_once(m)
-                        results[m] = is_model_cached(m)
-                    all_ok = all(results.values())
+                model_download_progress = gr.HTML()     # live log area
+                model_download_status = gr.HTML()        # summary table
+
+                def _on_download_progress(model, idx, total, done, msg):
+                    """Called by download_all_models_watchdog every ~15s."""
+                    return _model_download_progress_html(model, idx, total, done, msg)
+
+                def _model_download_progress_html(model, idx, total, done, msg):
+                    elapsed = msg.split("(")[-1].rstrip(")") if "(" in msg else ""
+                    icon = "✅" if done and "失败" not in msg else ("❌" if done else "⏳")
+                    safe = model.replace("/", "--")
+                    row = (
+                        f'<div style="font-size:0.85em;padding:2px 0">'
+                        f'{icon} [{idx}/{total}] {model}'
+                        f'<span style="color:#888;margin-left:8px">{msg}</span>'
+                        f'</div>'
+                    )
+                    return row
+
+                def _build_download_result(results: dict, total: int) -> tuple:
+                    succeeded = [m for m, ok in results.items() if ok]
+                    failed = [m for m, ok in results.items() if not ok]
                     lines = []
                     for m, ok in results.items():
-                        icon = "✅" if ok else "❌"
+                        icon = '<span style="color:#65a88a">✅</span>' if ok else '<span style="color:#f59e0b">❌</span>'
                         lines.append(f"{icon} {m}")
-                    msg = (
-                        '<span style="color:#65a88a">✅ 模型下载完成！</span><br>'
-                        + "<br>".join(lines)
-                    ) if all_ok else (
-                        '<span style="color:#f59e0b">⚠ 部分模型下载失败，请检查网络后重试。</span><br>'
-                        + "<br>".join(lines)
+                    if not failed:
+                        summary = '<span style="color:#65a88a">✅ 全部下载完成！</span>'
+                    else:
+                        summary = (
+                            f'<span style="color:#f59e0b">⚠ {len(failed)} 个模型下载失败，请检查网络后点「重试失败模型」</span>'
+                        )
+                    return (
+                        "<br>".join(lines) + "<br><br>" + summary,
+                        _model_status_html(results),
                     )
-                    return msg, _model_status_html(results)
 
-                model_download_btn.click(
-                    fn=_download_models_fn,
-                    outputs=[model_download_result, setup_model_status],
+                def _run_download_pipeline(runner, models_override=None):
+                    """Background pipeline: download all models, report every 15s."""
+                    from src.utils.model_download import (
+                        download_all_models_watchdog,
+                        XINYI_MODELS,
+                        is_model_cached,
+                    )
+                    # If retried, only download failed models
+                    if models_override is None:
+                        if _download_final_results:
+                            models = [m for m in XINYI_MODELS if not _download_final_results.get(m, True)]
+                        else:
+                            models = XINYI_MODELS
+                    else:
+                        models = models_override
+
+                    if not models:
+                        from src.data.decrypt import DecryptStep as DS
+                        runner.add(DS("下载完成", True, "所有模型已就绪"))
+                        return
+
+                    results = {}
+                    total = len(models)
+
+                    def on_progress(model, idx, total, done, msg):
+                        from src.data.decrypt import DecryptStep as DS
+                        step = DS(
+                            f"下载模型 {idx}/{total}",
+                            done,
+                            msg,
+                        )
+                        runner.update(step)
+                        _download_intermediate_results[model] = (done, msg, idx, total)
+                        if done:
+                            results[model] = "失败" not in msg
+
+                    all_results = dict(_download_final_results) if _download_final_results else {}
+                    for model in models:
+                        if runner.kill_requested:
+                            break
+                        if is_model_cached(model):
+                            all_results[model] = True
+                            on_progress(model, models.index(model) + 1, total, True, "已缓存，跳过")
+                            continue
+                        success = download_all_models_watchdog(on_progress=on_progress)
+                        all_results[model] = success.get(model, False)
+
+                    _download_intermediate_results["__done__"] = (True, "", len(models), len(models))
+                    _download_final_results.update(all_results)
+
+                _download_intermediate_results = {}
+                _download_final_results: dict = {}
+
+                def _start_download():
+                    """Start model download pipeline and activate timer."""
+                    _download_intermediate_results.clear()
+                    _download_final_results.clear()
+                    TrainingRunner.instance().start(
+                        _run_download_pipeline,
+                        render_fn=lambda: "",
+                        mode="model_download",
+                    )
+                    return "", ""
+
+                def _start_retry():
+                    """Retry failed models."""
+                    _download_intermediate_results.clear()
+                    _download_final_results.clear()
+                    TrainingRunner.instance().start(
+                        _run_download_pipeline,
+                        render_fn=lambda: "",
+                        mode="model_download",
+                    )
+                    return "", ""
+
+                model_download_all_btn.click(
+                    fn=_start_download,
+                    outputs=[model_download_progress, model_download_status],
+                ).then(
+                    fn=lambda: gr.Timer(active=True),
+                    outputs=[decrypt_timer],
                 )
+
+                model_retry_failed_btn.click(
+                    fn=_start_retry,
+                    outputs=[model_download_progress, model_download_status],
+                ).then(
+                    fn=lambda: gr.Timer(active=True),
+                    outputs=[decrypt_timer],
+                )
+
+                def _abort_download():
+                    from src.utils.model_download import abort_download
+                    abort_download()
+                    return (
+                        '<div style="font-size:0.85em;color:#f59e0b">⏹ 已请求停止下载…</div>',
+                        "",
+                    )
+
+                model_abort_btn.click(
+                    fn=_abort_download,
+                    outputs=[model_download_progress, model_download_status],
+                )
+
 
                 gr.Markdown("---\n#### 解密工具准备")
                 if not init_status["has_scanner"]:
@@ -2690,14 +2809,49 @@ def build_ui() -> gr.Blocks:
                         return (skip, html, gr.Timer(active=active),
                                 st_up, ban_up, skip, stop_vis)
 
+                    if r.mode == "model_download":
+                        # Build progress from _download_intermediate_results
+                        from src.utils.model_download import is_model_cached
+                        from src.data.decrypt import DecryptStep as DS
+                        status_lines = []
+                        for model, (done, msg, idx, total) in _download_intermediate_results.items():
+                            if model == "__done__":
+                                continue
+                            icon = '<span style="color:#65a88a">✅</span>' if done and "失败" not in msg else \
+                                   ('<span style="color:#f59e0b">❌</span>' if done else '<span>⏳</span>')
+                            status_lines.append(
+                                f'<div style="font-size:0.85em;padding:1px 0">{icon} [{idx}/{total}] {model}'
+                                f'<span style="color:#888;margin-left:8px">{msg}</span></div>'
+                            )
+                        progress_html = "<br>".join(status_lines)
+                        if "__done__" in _download_intermediate_results:
+                            results = _download_final_results
+                            status_html = _model_status_html(results) if results else ""
+                            done_html = ""
+                            for m, ok in results.items():
+                                icon = '<span style="color:#65a88a">✅</span>' if ok else '<span style="color:#f59e0b">❌</span>'
+                                done_html += f"{icon} {m}<br>"
+                            failed = sum(1 for ok in results.values() if not ok)
+                            if failed:
+                                done_html += f'<br><span style="color:#f59e0b">⚠ {failed} 个模型下载失败，请检查网络后重试</span>'
+                            else:
+                                done_html += '<br><span style="color:#65a88a">✅ 全部下载完成！</span>'
+                            progress_html = done_html
+                            status_html = ""
+                            active = False
+                        return (skip, skip, gr.Timer(active=active),
+                                skip, skip, skip, gr.update(),
+                                progress_html, status_html)
+
                     return (skip, skip, gr.Timer(active=active),
-                            skip, skip, skip, gr.update())
+                            skip, skip, skip, gr.update(),
+                            skip, skip)
 
                 # Note: decrypt_timer NOT in tick outputs — tick updates active state of
                 # the same instance without replacement, so tick stays registered
                 decrypt_timer.tick(
                     fn=_decrypt_poll,
-                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner, step1_status_html, decrypt_stop_btn],
+                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner, step1_status_html, decrypt_stop_btn, model_download_progress, model_download_status],
                 )
 
                 # step1_btn: update UI then activate timer via .then() chain

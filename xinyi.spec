@@ -34,7 +34,6 @@ hiddenimports = [
     "openai",
     "anthropic",
     "sentence_transformers",
-    "sentence_transformers.CrossEncoder",
     # Data
     "pandas",
     "jieba",
@@ -154,6 +153,8 @@ hiddenimports += collect_submodules("src.ui")
 datas = [
     (os.path.join(PROJECT_ROOT, ".env.example"), "."),
     (os.path.join(PROJECT_ROOT, "config.example.yaml"), "."),
+    # WeChat decrypt tooling
+    (os.path.join(PROJECT_ROOT, "vendor"), "vendor"),
 ]
 datas += collect_data_files("gradio")
 datas += collect_data_files("gradio_client")
