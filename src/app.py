@@ -2627,6 +2627,7 @@ def build_ui() -> gr.Blocks:
 
                 _download_intermediate_results = {}
                 _download_final_results: dict = {}
+                _model_download_timer_holder: list = []  # [Timer] set after timer is created
 
                 def _start_download():
                     """Start model download pipeline and activate timer."""
@@ -2637,6 +2638,8 @@ def build_ui() -> gr.Blocks:
                         render_fn=lambda: "",
                         mode="model_download",
                     )
+                    if _model_download_timer_holder:
+                        _model_download_timer_holder[0].start()
                     return "", ""
 
                 def _start_retry():
@@ -2648,22 +2651,18 @@ def build_ui() -> gr.Blocks:
                         render_fn=lambda: "",
                         mode="model_download",
                     )
+                    if _model_download_timer_holder:
+                        _model_download_timer_holder[0].start()
                     return "", ""
 
                 model_download_all_btn.click(
                     fn=_start_download,
                     outputs=[model_download_progress, model_download_status],
-                ).then(
-                    fn=lambda: gr.Timer(active=True),
-                    outputs=[decrypt_timer],
                 )
 
                 model_retry_failed_btn.click(
                     fn=_start_retry,
                     outputs=[model_download_progress, model_download_status],
-                ).then(
-                    fn=lambda: gr.Timer(active=True),
-                    outputs=[decrypt_timer],
                 )
 
                 def _abort_download():
@@ -2750,6 +2749,7 @@ def build_ui() -> gr.Blocks:
                     )
 
                 decrypt_timer = gr.Timer(value=3, active=False)
+                _model_download_timer_holder.append(decrypt_timer)
 
                 def _stop_decrypt_fn():
                     r = TrainingRunner.instance()
