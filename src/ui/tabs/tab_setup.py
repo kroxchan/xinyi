@@ -207,17 +207,36 @@ def render_tab_setup(
 
     def _save_api_with_wizard(pv, md, ak, bu):
         msg = save_api(pv, md, ak, bu)
+        # 重新读盘，获取保存后的真实值（可能被 strip/normalize 过）
+        new_ak, new_bu, new_md, new_pv = load_api_fields()
         wizard = UXHelper.format_setup_progress([
-            {"name": "API 配置", "done": bool(ak), "active": not bool(ak)},
-            {"name": "解密数据", "done": _has_decrypted, "active": bool(ak) and not _has_decrypted},
-            {"name": "训练",    "done": is_ready,       "active": bool(ak) and _has_decrypted and not is_ready},
+            {"name": "API 配置", "done": bool(new_ak), "active": not bool(new_ak)},
+            {"name": "解密数据", "done": _has_decrypted, "active": bool(new_ak) and not _has_decrypted},
+            {"name": "训练",    "done": is_ready,       "active": bool(new_ak) and _has_decrypted and not is_ready},
         ])
-        return msg, wizard
+        new_status = setup1_status_html()
+        return (
+            msg,
+            wizard,
+            new_status,
+            gr.update(value=new_pv),
+            gr.update(value=new_md),
+            gr.update(value=new_ak),
+            gr.update(value=new_bu),
+        )
 
     save_api_btn.click(
         fn=_save_api_with_wizard,
         inputs=[api_provider_input, api_model_input, api_key_input, api_base_input],
-        outputs=[save_api_result, setup_wizard_html],
+        outputs=[
+            save_api_result,
+            setup_wizard_html,
+            setup1_status,
+            api_provider_input,
+            api_model_input,
+            api_key_input,
+            api_base_input,
+        ],
     )
 
     # -- local model config (privacy-first) --

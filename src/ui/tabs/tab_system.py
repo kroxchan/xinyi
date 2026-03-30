@@ -144,7 +144,7 @@ def render_tab_system(
         demo.load(fn=_refresh_all, outputs=[status_dashboard, info_output])
 
     gr.Markdown("---\n### API 配置")
-    gr.Markdown("修改后保存到 `config.yaml`，需重启生效。")
+    gr.Markdown("修改后点击保存，立即生效，无需重启。")
     with gr.Row():
         sys_api_provider = gr.Dropdown(
             label="Provider",
@@ -161,15 +161,34 @@ def render_tab_system(
     sys_save_api_result = gr.HTML()
 
     def _save_and_refresh(pv, md, ak, bu):
+        from src.ui.callbacks_api import load_api_fields as _laf
         msg = save_api_and_refresh(pv, md, ak, bu)[0]
         dashboard = _render_status_dashboard_html()
         info = get_system_info()
-        return msg, dashboard, info
+        # 重新从磁盘读取，确保字段显示实际生效的值
+        new_ak, new_bu, new_md, new_pv = _laf()
+        return (
+            msg,
+            dashboard,
+            info,
+            gr.update(value=new_pv),
+            gr.update(value=new_md),
+            gr.update(value=new_ak),
+            gr.update(value=new_bu),
+        )
 
     sys_save_api_btn.click(
         fn=_save_and_refresh,
         inputs=[sys_api_provider, sys_api_model, sys_api_key, sys_api_base],
-        outputs=[sys_save_api_result, status_dashboard, info_output],
+        outputs=[
+            sys_save_api_result,
+            status_dashboard,
+            info_output,
+            sys_api_provider,
+            sys_api_model,
+            sys_api_key,
+            sys_api_base,
+        ],
     )
 
     gr.Markdown("---\n### 重置学习数据")
