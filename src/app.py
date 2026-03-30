@@ -1400,7 +1400,8 @@ def run_step1_prepare():
     Timer activation is handled separately via .then() chain on the button click.
     """
     runner = TrainingRunner.instance()
-    if runner.is_running():
+    # Only block if step1 is actively running; allow re-run when done or in other modes
+    if runner.is_running() and runner.mode == "step1":
         return _step_html(runner.get_steps())
     runner.start(_step1_pipeline, render_fn=_step_html, mode="step1")
     return '<div class="step-card step-ok">⏳ 正在准备解密工具…</div>'
@@ -1547,7 +1548,8 @@ def run_step3_decrypt_only():
         from src.data.decrypt import DecryptStep as DS
         return _step_html([DS("系统检查", False, "系统未初始化：" + str(init_error))])
     runner = TrainingRunner.instance()
-    if runner.is_running():
+    # Only block if step3 is actively running; step1 done or any done state allows restart
+    if runner.is_running() and runner.mode == "step3":
         return _step_html(runner.get_steps())
     runner.start(_decrypt_only_pipeline, render_fn=_step_html, mode="step3")
     return '<div class="step-card step-ok">⏳ 解密启动中…</div>'
@@ -2515,15 +2517,18 @@ def build_ui() -> gr.Blocks:
                 )
 
                 gr.Markdown("---\n#### 解密工具准备")
-                if init_status["has_scanner"]:
-                    gr.HTML('<span style="color:#65a88a">✓ 解密工具已就绪。</span>')
-                else:
+                if not init_status["has_scanner"]:
                     gr.HTML(STEP1_GUIDE_HTML)
-                step1_btn = gr.Button(
-                    "✓ 已准备" if init_status["has_scanner"] else "自动准备解密工具",
-                    variant="secondary" if init_status["has_scanner"] else "primary",
-                    interactive=not init_status["has_scanner"],
+                step1_status_html = gr.HTML(
+                    '<span style="color:#65a88a">✓ 解密工具已就绪。</span>'
+                    if init_status["has_scanner"] else ""
                 )
+                with gr.Row():
+                    step1_btn = gr.Button(
+                        "重新准备解密工具" if init_status["has_scanner"] else "自动准备解密工具",
+                        variant="secondary",
+                        scale=1,
+                    )
                 step1_output = gr.HTML()
 
                 gr.Markdown("---\n#### 提取密钥")
@@ -2584,28 +2589,40 @@ def build_ui() -> gr.Blocks:
                 def _decrypt_poll():
                     r = TrainingRunner.instance()
                     steps = r.get_steps()
+                    # Timer stays active only while a job is actually running
                     active = r.is_running() and not r.done
                     skip = gr.update()
-                    st_up = skip
-                    ban_up = skip
+                    # outputs order: step1_output, step3_output, decrypt_timer,
+                    #                setup1_status, step3_decrypt_banner, step1_status_html
+
                     if not steps:
-                        return skip, skip, gr.Timer(active=active), st_up, ban_up
+                        return skip, skip, gr.Timer(active=active), skip, skip, skip
+
                     html = _step_html(steps)
+
                     if r.mode == "step1":
-                        return html, skip, gr.Timer(active=active), st_up, ban_up
+                        # Only update step1_output; never touch step3_output
+                        s1_status = skip
+                        if r.done:
+                            s1_status = '<span style="color:#65a88a">✓ 解密工具已就绪。</span>'
+                        return html, skip, gr.Timer(active=active), skip, skip, s1_status
+
                     if r.mode == "step3":
-                        out3 = html
+                        # Only update step3_output; never touch step1_output
+                        st_up = skip
+                        ban_up = skip
                         if r.done:
                             st_up = _setup1_status_html()
                             ban_up = _step3_decrypt_banner_html()
-                        return skip, out3, gr.Timer(active=active), st_up, ban_up
-                    return skip, skip, gr.Timer(active=active), st_up, ban_up
+                        return skip, html, gr.Timer(active=active), st_up, ban_up, skip
+
+                    return skip, skip, gr.Timer(active=active), skip, skip, skip
 
                 # Note: decrypt_timer NOT in tick outputs — tick updates active state of
                 # the same instance without replacement, so tick stays registered
                 decrypt_timer.tick(
                     fn=_decrypt_poll,
-                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner],
+                    outputs=[step1_output, step3_output, decrypt_timer, setup1_status, step3_decrypt_banner, step1_status_html],
                 )
 
                 # step1_btn: update UI then activate timer via .then() chain
