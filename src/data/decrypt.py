@@ -255,25 +255,22 @@ class WeChatDecryptor:
             return DecryptStep("安装依赖", True, "无 requirements.txt，跳过")
 
         SKIP_PKGS = {"mcp"}
+        # Critical = blocks decryption; others are optional
+        CRITICAL_PKGS = {"pycryptodome"}
 
         with open(req_file, encoding="utf-8") as f:
             raw_lines = [l.strip() for l in f if l.strip() and not l.startswith("#")]
 
-        # Split into already-satisfied and actually-needed lines
         def _pkg_name(line: str) -> str:
             import re as _re
             return _re.split(r"[><=!\[;]", line)[0].strip().lower()
 
         def _is_installed(line: str) -> bool:
-            """Return True if the package is already importable / satisfies the spec."""
             try:
                 import importlib.metadata as _meta
                 from packaging.requirements import Requirement
                 req = Requirement(line)
-                dist = _meta.distribution(req.name)
-                if req.specifier:
-                    from packaging.version import Version
-                    return Version(dist.version) in req.specifier
+                _meta.distribution(req.name)   # raises if not present
                 return True
             except Exception:
                 return False
@@ -296,8 +293,7 @@ class WeChatDecryptor:
         newly_installed: list[str] = []
 
         if to_install:
-            # Try batch install first (faster, avoids N round-trips)
-            # Try official PyPI then fall back to Tsinghua mirror for CN users
+            # Batch install first
             for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
                 cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + to_install
                 if mirror:
@@ -308,13 +304,10 @@ class WeChatDecryptor:
                         newly_installed = [_pkg_name(l) for l in to_install]
                         to_install = []
                         break
-                    else:
-                        logger.warning("pip batch install failed (mirror=%s): %s",
-                                       mirror, r.stderr[-300:])
                 except subprocess.TimeoutExpired:
-                    logger.warning("pip batch install timed out (mirror=%s)", mirror)
+                    pass
 
-            # If batch still failed, fall back to per-package install
+            # Per-package fallback
             if to_install:
                 for line in to_install:
                     pname = _pkg_name(line)
@@ -329,10 +322,8 @@ class WeChatDecryptor:
                                 newly_installed.append(pname)
                                 installed_this = True
                                 break
-                            logger.warning("pip install %s failed (mirror=%s): %s",
-                                           line, mirror, r.stderr[-200:])
                         except subprocess.TimeoutExpired:
-                            logger.warning("pip install %s timed out (mirror=%s)", line, mirror)
+                            pass
                     if not installed_this:
                         failed.append(pname)
 
@@ -344,15 +335,19 @@ class WeChatDecryptor:
         if skipped_compat:
             detail_parts.append("跳过(不兼容): " + ", ".join(skipped_compat))
         if failed:
-            detail_parts.append("失败(不影响解密): " + ", ".join(failed))
+            detail_parts.append("失败: " + ", ".join(failed))
         detail = " | ".join(detail_parts)
 
-        # Failed deps are non-fatal — decryption may still work
+        critical_failed = CRITICAL_PKGS & set(failed)
+        if critical_failed:
+            return DecryptStep(
+                "安装依赖", False,
+                "关键包 {} 安装失败，解密无法进行，请检查网络后重试".format(", ".join(critical_failed)),
+                detail,
+            )
         summary = "依赖安装完成"
         if skipped_compat:
             summary += "（跳过 {} 个不兼容包）".format(len(skipped_compat))
-        if failed:
-            summary += "，{} 个安装失败（可能不影响解密）".format(len(failed))
         return DecryptStep("安装依赖", True, summary, detail)
 
     # ------------------------------------------------------------------
@@ -523,6 +518,15 @@ class WeChatDecryptor:
         return candidates[0]
 
     def decrypt_databases(self) -> DecryptStep:
+        # --- Fast-fail pre-check ---
+        try:
+            from Crypto.Cipher import AES as _aes
+        except ImportError:
+            return DecryptStep(
+                "解密数据库", False,
+                "缺少 pycryptodome，请回到第 1 步重新准备解密工具",
+            )
+
         repo_abs = REPO_DIR.resolve()
         script = repo_abs / "decrypt_db.py"
         if not script.exists():
@@ -543,21 +547,31 @@ class WeChatDecryptor:
         with open(config_file, "w") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
 
+        # Give the subprocess a generous timeout (15 min); it prints progress
+        # so the user won't think it is stuck
         try:
             result = subprocess.run(
                 [sys.executable, str(script)],
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=900,   # 15 minutes — large chat histories need time
                 cwd=str(repo_abs),
             )
             if result.returncode != 0:
-                return DecryptStep("解密数据库", False, "解密失败", result.stderr[-500:])
+                # Check if it's a Crypto import error
+                stderr = result.stderr
+                if "Crypto" in stderr or "pycryptodome" in stderr:
+                    return DecryptStep(
+                        "解密数据库", False,
+                        "pycryptodome 缺失，请回到第 1 步重新准备解密工具",
+                        stderr[-500:],
+                    )
+                return DecryptStep("解密数据库", False, "解密失败", stderr[-500:])
 
             db_count = len(list(self.output_dir.rglob("*.db")))
             return DecryptStep("解密数据库", True, "解密完成，{} 个数据库文件".format(db_count))
         except subprocess.TimeoutExpired:
-            return DecryptStep("解密数据库", False, "解密超时（300s）")
+            return DecryptStep("解密数据库", False, "解密超时（>15min），数据量较大可尝试重新解密")
 
     # ------------------------------------------------------------------
     # Full pipeline
