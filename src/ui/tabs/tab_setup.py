@@ -188,53 +188,37 @@ def render_tab_setup(
     # -- status overview (refreshed after decrypt via decrypt_timer) --
     setup1_status = gr.HTML(value=setup1_status_html())
 
-    # -- API config --
+    # -- API config -- always editable so users can update keys/models
     gr.Markdown("---\n#### API 配置")
-    if _has_api:
-                    # 显示当前配置的摘要，方便用户确认当前使用的是哪个模型/API
-                    _display_model = _md or "未指定"
-                    gr.HTML(
-                        '<div style="background:#fefcfb;border:1px solid #e6dcd8;border-radius:8px;padding:12px 16px;margin:8px 0">'
-                        '<div style="display:flex;gap:24px;flex-wrap:wrap">'
-                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Provider</span><br><b>{_pv}</b></div>'
-                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Model</span><br><b>{_display_model}</b></div>'
-                        f'<div><span style="color:#8c7b7f;font-size:0.85em">Base URL</span><br><code style="font-size:0.9em">{_bu or "默认"}</code></div>'
-                        '</div>'
-                        '<div style="margin-top:8px;font-size:0.85em;color:#8c7b7f">'
-                        '如需修改，请前往「设置」页面。'
-                        '</div>'
-                        '</div>'
-                    )
-    else:
-        gr.Markdown("填写大模型 API 信息后保存。")
+    gr.Markdown("填写大模型 API 信息后保存。已配置时可直接修改并重新保存。")
     with gr.Row():
         api_provider_input = gr.Dropdown(
             label="Provider", choices=["openai", "anthropic", "gemini"],
-            value=_pv, scale=1, interactive=not _has_api,
+            value=_pv, scale=1, interactive=True,
         )
-        api_model_input = gr.Textbox(label="Model", value=_md, scale=2, interactive=not _has_api)
+        api_model_input = gr.Textbox(label="Model", value=_md, scale=2, interactive=True)
     with gr.Row():
-        api_key_input = gr.Textbox(label="API Key", value=_ak, type="password", scale=3, interactive=not _has_api)
+        api_key_input = gr.Textbox(label="API Key", value=_ak, type="password", scale=3, interactive=True)
     with gr.Row():
-        api_base_input = gr.Textbox(label="Base URL（留空用默认）", value=_bu, scale=3, interactive=not _has_api)
-    if not _has_api:
-        save_api_btn = gr.Button("保存 API 配置", variant="primary")
-        save_api_result = gr.HTML()
+        api_base_input = gr.Textbox(label="Base URL（留空用默认）", value=_bu, scale=3, interactive=True)
 
-        def _save_api_with_wizard(pv, md, ak, bu):
-            msg = save_api(pv, md, ak, bu)
-            wizard = UXHelper.format_setup_progress([
-                {"name": "API 配置", "done": bool(ak), "active": not bool(ak)},
-                {"name": "解密数据", "done": _has_decrypted, "active": bool(ak) and not _has_decrypted},
-                {"name": "训练",    "done": is_ready,       "active": bool(ak) and _has_decrypted and not is_ready},
-            ])
-            return msg, wizard
+    save_api_btn = gr.Button("保存 API 配置", variant="primary")
+    save_api_result = gr.HTML()
 
-        save_api_btn.click(
-            fn=_save_api_with_wizard,
-            inputs=[api_provider_input, api_model_input, api_key_input, api_base_input],
-            outputs=[save_api_result, setup_wizard_html],
-        )
+    def _save_api_with_wizard(pv, md, ak, bu):
+        msg = save_api(pv, md, ak, bu)
+        wizard = UXHelper.format_setup_progress([
+            {"name": "API 配置", "done": bool(ak), "active": not bool(ak)},
+            {"name": "解密数据", "done": _has_decrypted, "active": bool(ak) and not _has_decrypted},
+            {"name": "训练",    "done": is_ready,       "active": bool(ak) and _has_decrypted and not is_ready},
+        ])
+        return msg, wizard
+
+    save_api_btn.click(
+        fn=_save_api_with_wizard,
+        inputs=[api_provider_input, api_model_input, api_key_input, api_base_input],
+        outputs=[save_api_result, setup_wizard_html],
+    )
 
     # -- local model config (privacy-first) --
     gr.Markdown("---\n#### 🤖 本地模型（隐私优先）")

@@ -67,30 +67,32 @@ def load_api_fields() -> tuple[str, str, str, str]:
 
 def _do_reinit():
     """Re-initialise app components after config save. Returns (error_str or None)."""
-    global components, init_error, contact_registry, session_mgr, persona_mgr
     from src.logging_config import get_logger
     _log = get_logger(__name__)
 
     try:
+        import src.app as _app_module
         _cfg = load_config()
-        from src import app as _app_module
-        components = _app_module.init_components(_cfg)
+        new_components = _app_module.init_components(_cfg)
+        # 必须直接写回 app 模块的全局变量，否则运行时仍用旧配置
+        _app_module.components = new_components
+        _app_module.init_error = None
         from src.engine.advisor_registry import get_registry as _gr
         _gr().reload()
         from src.engine.session import SessionManager
-        session_mgr = SessionManager(directory="data/sessions")
+        _app_module.session_mgr = SessionManager(directory="data/sessions")
         from src.engine.persona import PersonaManager
-        persona_mgr = PersonaManager(directory="data/personas")
+        _app_module.persona_mgr = PersonaManager(directory="data/personas")
         from src.data.contact_registry import ContactRegistry
-        contact_registry = ContactRegistry()
+        _app_module.contact_registry = ContactRegistry()
         _app_module.ensure_couple_personas()
         import threading
-        threading.Thread(target=components["embedder"].warmup, daemon=True).start()
-        init_error = None
+        threading.Thread(target=new_components["embedder"].warmup, daemon=True).start()
         _log.info("API 配置保存后重新初始化成功")
         return None
     except Exception as e:
-        init_error = str(e)
+        import src.app as _app_module
+        _app_module.init_error = str(e)
         _log.error("API 保存后重新初始化失败: %s", e)
         return UXHelper.format_error(
             title="初始化失败",
