@@ -258,12 +258,14 @@ def retry_download_model(model_name: str) -> bool:
 
 def download_all_models_watchdog(
     on_progress: Optional[Callable[[str, int, int, bool, str], None]] = None,
+    *,
+    skip_cached: bool = False,
 ) -> dict[str, bool]:
-    """Download all XINYI models sequentially with progress reporting.
+    """Download XINYI models sequentially with progress reporting.
 
     Args:
         on_progress(model, idx, total, done, msg): called every ~15s and on done.
-             done=True means the model just finished.
+        skip_cached: if True, skip models already cached locally.
 
     Returns:
         model -> success dict.
@@ -271,10 +273,15 @@ def download_all_models_watchdog(
     global _download_aborted
     _download_aborted = False
 
-    results = {}
-    total = len(XINYI_MODELS)
+    # Respect skip_cached: filtered list becomes the "total"
+    models_to_download = XINYI_MODELS
+    if skip_cached:
+        models_to_download = [m for m in XINYI_MODELS if not is_model_cached(m)]
 
-    for idx, model in enumerate(XINYI_MODELS, 1):
+    results = {}
+    total = len(models_to_download)
+
+    for idx, model in enumerate(models_to_download, 1):
         if _download_aborted:
             logger.info("下载被用户中止")
             results[model] = False

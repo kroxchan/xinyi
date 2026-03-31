@@ -2576,54 +2576,28 @@ def build_ui() -> gr.Blocks:
                     )
 
                 def _run_download_pipeline(runner, models_override=None):
-                    """Background pipeline: download all models, report every 15s."""
-                    from src.utils.model_download import (
-                        download_all_models_watchdog,
-                        XINYI_MODELS,
-                        is_model_cached,
-                    )
-                    # If retried, only download failed models
-                    if models_override is None:
-                        if _download_final_results:
-                            models = [m for m in XINYI_MODELS if not _download_final_results.get(m, True)]
-                        else:
-                            models = XINYI_MODELS
-                    else:
-                        models = models_override
+                    """Background pipeline: download models, report every 15s.
 
-                    if not models:
-                        from src.data.decrypt import DecryptStep as DS
-                        runner.add(DS("下载完成", True, "所有模型已就绪"))
-                        return
+                    delegates to download_all_models_watchdog(skip_cached=True) which
+                    internally skips cached models and reports progress.
+                    """
+                    from src.utils.model_download import download_all_models_watchdog
 
-                    results = {}
-                    total = len(models)
+                    is_retry = models_override is not None
+                    skip_cached = not is_retry  # full-download: skip cached; retry: use explicit list
 
                     def on_progress(model, idx, total, done, msg):
-                        from src.data.decrypt import DecryptStep as DS
-                        step = DS(
-                            f"下载模型 {idx}/{total}",
-                            done,
-                            msg,
-                        )
-                        runner.update(step)
                         _download_intermediate_results[model] = (done, msg, idx, total)
+                        # Signal done so poll knows to stop timer
                         if done:
-                            results[model] = "失败" not in msg
+                            _download_intermediate_results["__done__"] = (True, "", total, total)
 
-                    all_results = dict(_download_final_results) if _download_final_results else {}
-                    for model in models:
-                        if runner.kill_requested:
-                            break
-                        if is_model_cached(model):
-                            all_results[model] = True
-                            on_progress(model, models.index(model) + 1, total, True, "已缓存，跳过")
-                            continue
-                        success = download_all_models_watchdog(on_progress=on_progress)
-                        all_results[model] = success.get(model, False)
-
-                    _download_intermediate_results["__done__"] = (True, "", len(models), len(models))
-                    _download_final_results.update(all_results)
+                    results = download_all_models_watchdog(
+                        on_progress=on_progress,
+                        skip_cached=skip_cached,
+                    )
+                    _download_final_results.update(results)
+                    runner.done = True
 
                 _download_intermediate_results = {}
                 _download_final_results: dict = {}
@@ -2643,24 +2617,27 @@ def build_ui() -> gr.Blocks:
                     return "", ""
 
                 def _start_retry():
-                    """Retry failed models (only those that actually failed)."""
+                    """Retry failed models: re-downloads ALL models (skip_cached=False).
+
+                    This re-runs the full download pipeline; watchdog internally
+                    detects which models are already cached and skips them.
+                    If all are already cached, show a friendly message.
+                    """
                     from src.utils.model_download import XINYI_MODELS, is_model_cached
-                    # Check first: if all are already cached, nothing to do
-                    failed = [m for m in XINYI_MODELS if not is_model_cached(m)]
-                    if not failed:
+                    # Fast check before starting any pipeline
+                    if all(is_model_cached(m) for m in XINYI_MODELS):
                         all_lines = "".join(
                             f'<span style="color:#65a88a">✅</span> {m}<br>'
                             for m in XINYI_MODELS
                         )
                         return (
-                            all_lines + '<br><span style="color:#65a88a">✅ 所有模型已下载完成，无需重复下载。</span>',
+                            all_lines + '<br><span style="color:#65a88a">✅ 所有模型已就绪，无需重复下载。</span>',
                             "",
                         )
-                    # Only retry failed ones
                     _download_intermediate_results.clear()
                     _download_final_results.clear()
                     TrainingRunner.instance().start(
-                        lambda r: _run_download_pipeline(r, models_override=failed),
+                        _run_download_pipeline,
                         render_fn=lambda: "",
                         mode="model_download",
                     )
@@ -2680,13 +2657,13 @@ def build_ui() -> gr.Blocks:
 
                 def _abort_download():
                     from src.utils.model_download import abort_download
-                    from src.data.decrypt import DecryptStep as DS
                     abort_download()
                     runner = TrainingRunner.instance()
                     if runner.is_running() and runner.mode == "model_download":
                         runner.request_kill()
                         runner.done = True
-                        _model_download_timer_holder[0].stop()
+                        if _model_download_timer_holder:
+                            _model_download_timer_holder[0].stop()
                         return (
                             '<div style="font-size:0.85em;color:#f59e0b">⏹ 已停止下载</div>',
                             "",
@@ -2834,8 +2811,6 @@ def build_ui() -> gr.Blocks:
 
                     if r.mode == "model_download":
                         # Build progress from _download_intermediate_results
-                        from src.utils.model_download import is_model_cached
-                        from src.data.decrypt import DecryptStep as DS
                         status_lines = []
                         for model, (done, msg, idx, total) in _download_intermediate_results.items():
                             if model == "__done__":
@@ -2849,7 +2824,6 @@ def build_ui() -> gr.Blocks:
                         progress_html = "<br>".join(status_lines)
                         if "__done__" in _download_intermediate_results:
                             results = _download_final_results
-                            status_html = _model_status_html(results) if results else ""
                             done_html = ""
                             for m, ok in results.items():
                                 icon = '<span style="color:#65a88a">✅</span>' if ok else '<span style="color:#f59e0b">❌</span>'
@@ -2859,12 +2833,16 @@ def build_ui() -> gr.Blocks:
                                 done_html += f'<br><span style="color:#f59e0b">⚠ {failed} 个模型下载失败，请检查网络后重试</span>'
                             else:
                                 done_html += '<br><span style="color:#65a88a">✅ 全部下载完成！</span>'
-                            progress_html = done_html
-                            status_html = ""
-                            active = False
+                            # Stop timer so other pipelines (step1) can run freely
+                            _model_download_timer_holder[0].stop() if _model_download_timer_holder else None
+                            # Clear old intermediate results so next download starts clean
+                            _download_intermediate_results.clear()
+                            return (skip, skip, gr.Timer(active=False),
+                                    skip, skip, skip, gr.update(),
+                                    done_html, "")
                         return (skip, skip, gr.Timer(active=active),
                                 skip, skip, skip, gr.update(),
-                                progress_html, status_html)
+                                progress_html, "")
 
                     return (skip, skip, gr.Timer(active=active),
                             skip, skip, skip, gr.update(),
