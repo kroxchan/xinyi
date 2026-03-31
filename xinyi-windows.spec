@@ -137,6 +137,8 @@ hiddenimports += collect_submodules("src.personality")
 hiddenimports += collect_submodules("src.features")
 hiddenimports += collect_submodules("src.engine")
 hiddenimports += collect_submodules("src.ui")
+hiddenimports += collect_submodules("src.cognitive")
+hiddenimports += collect_submodules("src.data")
 
 datas = [
     (os.path.join(PROJECT_ROOT, ".env.example"), "."),
@@ -147,6 +149,7 @@ datas = [
 datas += collect_data_files("gradio")
 datas += collect_data_files("gradio_client")
 datas += collect_data_files("chromadb")
+datas += collect_data_files("chromadb_rust_bindings")
 
 module_collection_mode = {
     "gradio": "pyz+py",
