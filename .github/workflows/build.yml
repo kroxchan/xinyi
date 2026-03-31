@@ -55,7 +55,7 @@ jobs:
 
       - name: Package as ZIP
         shell: powershell
-        run: Compress-Archive -Path dist/xinyi -DestinationPath xinyi-windows.zip
+        run: Compress-Archive -Path dist\xinyi -DestinationPath xinyi-windows.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -89,23 +89,23 @@ jobs:
             echo "tag_name=${{ github.ref }}" >> $GITHUB_OUTPUT
           elif [[ "${{ github.ref }}" == refs/heads/main ]]; then
             echo "mode=main" >> $GITHUB_OUTPUT
-            echo "tag_name=v1.0.3" >> $GITHUB_OUTPUT
+            echo "tag_name=v1.0.4" >> $GITHUB_OUTPUT
           else
             echo "mode=dispatch" >> $GITHUB_OUTPUT
-            echo "tag_name=v1.0.3" >> $GITHUB_OUTPUT
+            echo "tag_name=v1.0.4" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload to Release (dispatch mode - overwrite v1.0.3)
+      - name: Upload to Release (dispatch mode - overwrite v1.0.4)
         if: steps.release_mode.outputs.mode == 'dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.3
-          name: xinyi v1.0.3
+          tag_name: v1.0.4
+          name: xinyi v1.0.4
           draft: false
           prerelease: false
           overwrite_files: true
           body: |
-            xinyi v1.0.3
+            xinyi v1.0.4
 
             支持 macOS / Windows，下载对应安装包，解压后运行；启动后会尝试打开浏览器访问控制台。
 
@@ -119,27 +119,26 @@ jobs:
             3. 在「连接 / 设置」中填写 API Key 并保存
 
             ## 本版更新
-            - 修复：保存 API 后运行时未真正切换新 Key（全局重载与可写目录 config 路径）
-            - 修复：安装包内 `config.yaml` 写入路径错误导致的初始化异常
-            - 连接页与设置页 API 字段双向同步，保存后无需刷新页面
-            - 主界面 `app.py` 连接 Tab 与设置 Tab 统一保存逻辑，避免「连接页未更新」
+            - 准备步骤预检优化：已编译则跳过，无关键依赖则友好提示
+            - 重构 decrypt 模块清理逻辑与错误处理
+            - 更新 thinking_profiler 推理链稳定性
           files: |
             artifacts/xinyi-macos/xinyi-macos.zip
             artifacts/xinyi-windows/xinyi-windows.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload to Release (main branch - overwrite v1.0.3)
+      - name: Upload to Release (main branch - overwrite v1.0.4)
         if: steps.release_mode.outputs.mode == 'main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.3
-          name: xinyi v1.0.3
+          tag_name: v1.0.4
+          name: xinyi v1.0.4
           draft: false
           prerelease: false
           overwrite_files: true
           body: |
-            xinyi v1.0.3
+            xinyi v1.0.4
 
             支持 macOS / Windows，下载对应安装包，解压后运行；启动后会尝试打开浏览器访问控制台。
 
@@ -153,15 +152,14 @@ jobs:
             3. 在「连接 / 设置」中填写 API Key 并保存
 
             ## 本版更新
-            - 修复：保存 API 后运行时未真正切换新 Key（全局重载与可写目录 config 路径）
-            - 修复：安装包内 `config.yaml` 写入路径错误导致的初始化异常
-            - 连接页与设置页 API 字段双向同步，保存后无需刷新页面
-            - 主界面 `app.py` 连接 Tab 与设置 Tab 统一保存逻辑，避免「连接页未更新」
+            - 准备步骤预检优化：已编译则跳过，无关键依赖则友好提示
+            - 重构 decrypt 模块清理逻辑与错误处理
+            - 更新 thinking_profiler 推理链稳定性
           files: |
             artifacts/xinyi-macos/xinyi-macos.zip
             artifacts/xinyi-windows/xinyi-windows.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release (tag mode - new release)
         if: steps.release_mode.outputs.mode == 'tag'
@@ -175,4 +173,4 @@ jobs:
             artifacts/xinyi-macos/xinyi-macos.zip
             artifacts/xinyi-windows/xinyi-windows.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
