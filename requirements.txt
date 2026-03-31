@@ -1,11 +1,16 @@
 # Core
 chromadb>=0.5.0
-gradio>=4.0.0
+gradio>=4.0.0,<5.0.0
 openai>=1.0.0
 anthropic>=0.30.0
 
 # Embeddings (local)
 sentence-transformers>=3.0.0
+# huggingface_hub 是 sentence-transformers 和 transformers 的核心依赖，
+# 必须锁定在 0.x 以兼容 HfFolder（gradio 的 oauth 模块依赖）
+huggingface_hub>=0.19.0,<1.0.0
+# transformers 4.x 与 huggingface_hub 0.x 兼容
+transformers>=4.30.0,<5.0.0
 
 # Data processing
 pandas>=2.0.0

@@ -163,6 +163,7 @@ datas = [
 datas += collect_data_files("gradio")
 datas += collect_data_files("gradio_client")
 datas += collect_data_files("chromadb")
+datas += collect_data_files("chromadb_rust_bindings")
 
 module_collection_mode = {
     "gradio": "pyz+py",
