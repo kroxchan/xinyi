@@ -6,6 +6,7 @@
 
 - **训练自己**：学你的说话风格，对象可以和「你的分身」聊，看你平时怎么表达的
 - **训练对方**：学 TA 的说话风格，你可以和「TA 的分身」对话，理解 TA 为什么那样说
+![img_v3_0210a_3e5db79c-4e7a-4b21-bb52-bf4aa3eca65g](https://github.com/user-attachments/assets/d23784ff-949e-410d-82ec-69fa70775c18)
 
 ---
 
@@ -194,4 +195,4 @@ MIT License — 自由使用、修改、商业化
 
 ---
 
-Made with ❤️ by [@kroxchan](https://github.com/kroxchan)
+Made ❤️ by [@kroxchan](https://github.com/kroxchan)
