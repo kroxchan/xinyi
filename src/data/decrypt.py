@@ -13,6 +13,38 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def _real_python() -> str:
+    """Return path to a usable Python interpreter for running pip.
+
+    In a PyInstaller macOS .app bundle sys.executable points to the
+    bundle binary itself; invoking it recursively deadlocks.
+    We detect bundle (sys._MEIPASS) and fall back to the macOS system Python
+    via xcrun, which is guaranteed to exist on every macOS system.
+    On non-bundle platforms, returns sys.executable unchanged.
+    """
+    import sys as _sys
+    import pathlib as _pathlib
+
+    # Detect PyInstaller macOS bundle
+    meipass = getattr(_sys, "_MEIPASS", None)
+    if meipass:
+        # Try xcrun python3 first — guaranteed to exist on every macOS
+        import subprocess as _subprocess
+        try:
+            r = _subprocess.run(
+                ["xcrun", "python3", "-c", "import sys; print(sys.executable)"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return r.stdout.strip()
+        except Exception:
+            pass
+        # Fallback: system python3
+        return "/usr/bin/python3"
+
+    return _sys.executable
+
+
 def _sudo_run(cmd_str: str, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run a shell command with admin privileges via macOS GUI password dialog."""
     if platform.system() == "Darwin":
@@ -265,13 +297,32 @@ class WeChatDecryptor:
             import re as _re
             return _re.split(r"[><=!\[;]", line)[0].strip().lower()
 
+        # Module name → package name mapping for find_spec
+        # (some packages use different import names)
+        IMPORT_NAME = {
+            "pycryptodome": "Crypto",
+            "zstandard": "zstandard",
+            "pycryptodomex": "Cryptodome",
+        }
+
         def _is_installed(line: str) -> bool:
+            """Check if a package is importable.
+
+            Works in both dev environments and PyInstaller bundles.
+            Uses find_spec to check the filesystem rather than the
+            distribution metadata registry (which is empty in bundles).
+            """
             try:
-                import importlib.metadata as _meta
-                from packaging.requirements import Requirement
-                req = Requirement(line)
-                _meta.distribution(req.name)   # raises if not present
-                return True
+                import re as _re
+                from importlib.util import find_spec as _find_spec
+                pname = _re.split(r"[><=!\[;]", line)[0].strip().lower()
+                # Try the canonical import name first
+                for pkg, imp in IMPORT_NAME.items():
+                    if pname.startswith(pkg):
+                        if _find_spec(imp) is not None:
+                            return True
+                # Fall back: try package name directly
+                return _find_spec(pname.replace("-", "_")) is not None
             except Exception:
                 return False
 
@@ -293,9 +344,9 @@ class WeChatDecryptor:
         newly_installed: list[str] = []
 
         if to_install:
-            # Batch install first
+            # Batch install first (try mirrors)
             for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
-                cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + to_install
+                cmd = [_real_python(), "-m", "pip", "install", "--quiet"] + to_install
                 if mirror:
                     cmd += ["-i", mirror]
                 try:
@@ -304,16 +355,19 @@ class WeChatDecryptor:
                         newly_installed = [_pkg_name(l) for l in to_install]
                         to_install = []
                         break
+                    # Log stderr for debugging
+                    if r.stderr:
+                        logger.warning("pip batch install failed (mirror=%s): %s", mirror, r.stderr[:200])
                 except subprocess.TimeoutExpired:
                     pass
 
-            # Per-package fallback
+            # Per-package fallback + collect failed
             if to_install:
                 for line in to_install:
                     pname = _pkg_name(line)
                     installed_this = False
                     for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
-                        cmd = [sys.executable, "-m", "pip", "install", "--quiet", line]
+                        cmd = [_real_python(), "-m", "pip", "install", "--quiet", line]
                         if mirror:
                             cmd += ["-i", mirror]
                         try:
@@ -340,14 +394,18 @@ class WeChatDecryptor:
 
         critical_failed = CRITICAL_PKGS & set(failed)
         if critical_failed:
+            fallback_cmd = " ".join([_real_python(), "-m", "pip", "install"] + failed)
             return DecryptStep(
                 "安装依赖", False,
-                "关键包 {} 安装失败，解密无法进行，请检查网络后重试".format(", ".join(critical_failed)),
-                detail,
+                "关键包 {} 安装失败，请检查网络后重试".format(", ".join(critical_failed)),
+                "手动安装命令（复制到终端运行）：\n" + fallback_cmd + "\n\n"
+                "提示：国内用户可加镜像：\n" + fallback_cmd.replace("-m pip install", "-m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple"),
             )
         summary = "依赖安装完成"
         if skipped_compat:
             summary += "（跳过 {} 个不兼容包）".format(len(skipped_compat))
+        if newly_installed:
+            summary = "已安装 " + ", ".join(newly_installed) + "，" + summary
         return DecryptStep("安装依赖", True, summary, detail)
 
     # ------------------------------------------------------------------

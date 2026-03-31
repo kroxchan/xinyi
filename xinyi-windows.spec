@@ -38,6 +38,10 @@ hiddenimports = [
     "requests",
     "torch",
     "numpy",
+    # WeChat decrypt deps (bundled so pip install is rarely needed)
+    "pycryptodome",
+    "Crypto",
+    "zstandard",
     # Internal
     "src.config",
     "src.exceptions",
