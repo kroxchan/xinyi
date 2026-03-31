@@ -2643,11 +2643,24 @@ def build_ui() -> gr.Blocks:
                     return "", ""
 
                 def _start_retry():
-                    """Retry failed models."""
+                    """Retry failed models (only those that actually failed)."""
+                    from src.utils.model_download import XINYI_MODELS, is_model_cached
+                    # Check first: if all are already cached, nothing to do
+                    failed = [m for m in XINYI_MODELS if not is_model_cached(m)]
+                    if not failed:
+                        all_lines = "".join(
+                            f'<span style="color:#65a88a">✅</span> {m}<br>'
+                            for m in XINYI_MODELS
+                        )
+                        return (
+                            all_lines + '<br><span style="color:#65a88a">✅ 所有模型已下载完成，无需重复下载。</span>',
+                            "",
+                        )
+                    # Only retry failed ones
                     _download_intermediate_results.clear()
                     _download_final_results.clear()
                     TrainingRunner.instance().start(
-                        _run_download_pipeline,
+                        lambda r: _run_download_pipeline(r, models_override=failed),
                         render_fn=lambda: "",
                         mode="model_download",
                     )
@@ -2667,9 +2680,19 @@ def build_ui() -> gr.Blocks:
 
                 def _abort_download():
                     from src.utils.model_download import abort_download
+                    from src.data.decrypt import DecryptStep as DS
                     abort_download()
+                    runner = TrainingRunner.instance()
+                    if runner.is_running() and runner.mode == "model_download":
+                        runner.request_kill()
+                        runner.done = True
+                        _model_download_timer_holder[0].stop()
+                        return (
+                            '<div style="font-size:0.85em;color:#f59e0b">⏹ 已停止下载</div>',
+                            "",
+                        )
                     return (
-                        '<div style="font-size:0.85em;color:#f59e0b">⏹ 已请求停止下载…</div>',
+                        '<div style="font-size:0.85em;color:#888">无正在执行的下载任务</div>',
                         "",
                     )
 
