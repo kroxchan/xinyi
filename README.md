@@ -9,6 +9,9 @@
 
 两种模式用的是同一套引擎，差别只在于从谁的消息里学习。
 
+![img_v3_0210a_3e5db79c-4e7a-4b21-bb52-bf4aa3eca65g](https://github.com/user-attachments/assets/d9194e43-a45d-44b9-8f96-9e116a61301f)
+
+
 ---
 
 ## 为什么做这个
