@@ -179,7 +179,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "test", "pytest", "setuptools"],
+    # pkg_resources runtime hooks need setuptools' vendored modules.
+    excludes=["tkinter", "test", "pytest"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

@@ -20,6 +20,10 @@ else:
 hiddenimports = [
     # Core
     "chromadb",
+    "chromadb.api",
+    "chromadb.api.rust",
+    "chromadb.api.types",
+    "chromadb.api.models",
     "gradio",
     "gradio.blocks",
     "gradio.routes",
@@ -39,7 +43,6 @@ hiddenimports = [
     "torch",
     "numpy",
     # WeChat decrypt deps (bundled so pip install is rarely needed)
-    "pycryptodome",
     "Crypto",
     "zstandard",
     # Internal
@@ -126,10 +129,8 @@ hiddenimports = [
     "src.ui.tabs.tab_eval",
     "src.ui.tabs.tab_memories",
     "src.context",
-    # Windows-specific
-    "win32api",
-    "win32con",
 ]
+hiddenimports += collect_submodules("chromadb.api")
 hiddenimports += collect_submodules("chromadb.telemetry")
 hiddenimports += collect_submodules("src.memory")
 hiddenimports += collect_submodules("src.belief")
@@ -165,7 +166,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "test", "pytest", "setuptools"],
+    # pkg_resources runtime hooks need setuptools' vendored modules.
+    excludes=["tkinter", "test", "pytest"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
