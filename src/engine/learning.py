@@ -118,7 +118,7 @@ class LearningLoop:
         top_contacts = [c for c, _ in contact_counts.most_common(top_n_contacts)]
 
         total_added = 0
-        for contact in top_contacts:
+        for i, contact in enumerate(top_contacts):
             convs = by_contact[contact]
             step = max(1, len(convs) // samples_per_contact)
             sampled = convs[::step][:samples_per_contact]
@@ -145,6 +145,7 @@ class LearningLoop:
                             total_added += 1
                 except Exception as e:
                     logger.warning("Belief extraction failed: %s", e)
+            logger.info("[Beliefs] %.0f%% (%d/%d contacts)", i / len(top_contacts) * 100, i + 1, len(top_contacts))
 
         self.belief_graph.save()
         logger.info("Batch beliefs: %d new from %d contacts", total_added, len(top_contacts))

@@ -146,9 +146,56 @@ def _detect_emotion(text: str) -> str:
 class ThinkingProfiler:
     """Data-driven thinking model extraction from conversations."""
 
-    def __init__(self, api_client, model: str) -> None:
+    # 各类 LLM 调用的 timeout（秒），反代慢时可在 config 中覆盖
+    _DEFAULT_TIMEOUTS = {
+        "analyze_scenario": 120,
+        "synthesize": 180,
+        "condense": 120,
+        "cognitive_profile": 60,
+        "emotion_boundaries": 120,
+        "emotion_expression": 60,
+    }
+
+    def __init__(
+        self,
+        api_client,
+        model: str,
+        timeouts: dict | None = None,
+        runner=None,
+    ) -> None:
         self.client = api_client
         self.model = model
+        self._timeouts = {**self._DEFAULT_TIMEOUTS, **(timeouts or {})}
+        self._runner = runner  # heartbeat progress updates
+
+    def _llm(
+        self,
+        call_type: str,
+        system_prompt: str,
+        user_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        """统一 LLM 调用入口，自动应用 timeout 并记录耗时。"""
+        timeout = self._timeouts.get(call_type, 120)
+        import time as _llm_time
+        t0 = _llm_time.time()
+        logger.info("[LLM] %s 开始 (timeout=%ds)", call_type, timeout)
+        if self._runner:
+            self._runner.update("⏳ {} 中…".format(call_type))
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        elapsed = _llm_time.time() - t0
+        result = resp.choices[0].message.content or ""
+        logger.info("[LLM] %s 完成，耗时 %.1fs，%d 字", call_type, elapsed, len(result))
+        return result
 
     def _classify_conversation(self, text: str) -> str:
         """Classify a conversation into an emotional scenario bucket."""
@@ -217,18 +264,12 @@ class ThinkingProfiler:
         prompt = EXTRACT_PROMPT.format(scenario=label, n=len(texts), conversations=conv_block)
 
         logger.info("[%s] Analyzing %d conversations...", scenario, len(texts))
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是认知心理学家，专精从真实对话数据中提取行为模式和认知结构。你的分析必须严格基于数据证据，不能凭空推测。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
+        return self._llm(
+            "analyze_scenario",
+            system_prompt="你是认知心理学家，专精从真实对话数据中提取行为模式和认知结构。你的分析必须严格基于数据证据，不能凭空推测。",
+            user_prompt=prompt,
             max_tokens=4000,
         )
-        result = resp.choices[0].message.content or ""
-        logger.info("[%s] Analysis complete: %d chars", scenario, len(result))
-        return result
 
     def _synthesize(self, analyses: dict[str, str]) -> str:
         """Cross-scenario synthesis."""
@@ -239,41 +280,30 @@ class ThinkingProfiler:
 
         prompt = SYNTHESIS_PROMPT.format(n_scenarios=len(analyses), analyses=analysis_block)
         logger.info("Synthesizing %d scenario analyses...", len(analyses))
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是认知心理学家，专精从行为数据中构建认知模型。你的工作是找到跨情境的一致模式，而不是重复各场景的描述。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
+        return self._llm(
+            "synthesize",
+            system_prompt="你是认知心理学家，专精从行为数据中构建认知模型。你的工作是找到跨情境的一致模式，而不是重复各场景的描述。",
+            user_prompt=prompt,
             max_tokens=6000,
         )
-        result = resp.choices[0].message.content or ""
-        logger.info("Synthesis complete: %d chars", len(result))
-        return result
 
     def _condense(self, synthesis: str) -> str:
         """Condense synthesis into prompt-ready instructions."""
         prompt = CONDENSE_PROMPT.format(synthesis=synthesis)
         logger.info("Condensing into prompt instructions...")
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": "你是AI提示词工程师。你的任务是把心理学分析转化成可执行的AI行为指令。指令必须具体到'当X时做Y'的程度。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
+        return self._llm(
+            "condense",
+            system_prompt="你是AI提示词工程师。你的任务是把心理学分析转化成可执行的AI行为指令。指令必须具体到'当X时做Y'的程度。",
+            user_prompt=prompt,
             max_tokens=3000,
         )
-        result = resp.choices[0].message.content or ""
-        logger.info("Condensed: %d chars", len(result))
-        return result
 
     def train(
         self,
         conversations: list[dict],
         contact_wxid: str | None = None,
         progress_callback=None,
+        runner=None,
     ) -> str:
         """Full training pipeline: bucket → per-scenario analysis → synthesis → condense.
 
@@ -281,13 +311,18 @@ class ThinkingProfiler:
             conversations: list of conversation dicts with 'text' and 'contact' keys
             contact_wxid: optional filter to train only on a specific contact
             progress_callback: optional callable(step_name, detail) for UI updates
+            runner: optional TrainingRunner for heartbeat progress
 
         Returns:
             Condensed thinking model text ready for prompt injection.
         """
+        _runner = runner or self._runner
+
         def _progress(step, detail=""):
             if progress_callback:
                 progress_callback(step, detail)
+            if _runner:
+                _runner.update("⚡ {}: {}".format(step, detail))
             logger.info("[ThinkingProfiler] %s: %s", step, detail)
 
         if contact_wxid:
@@ -384,6 +419,7 @@ class ThinkingProfiler:
         self,
         conversations: list[dict],
         progress_callback=None,
+        runner=None,
     ) -> dict:
         """Extract cognitive style parameters from conversation data.
 
@@ -391,9 +427,13 @@ class ThinkingProfiler:
         signatures), and appraisal theory. The output tunes how the inner
         thinking stage processes messages.
         """
+        _runner = runner or self._runner
+
         def _progress(step, detail=""):
             if progress_callback:
                 progress_callback(step, detail)
+            if _runner:
+                _runner.update("⚡ {}: {}".format(step, detail))
             logger.info("[CognitiveProfile] %s: %s", step, detail)
 
         _progress("采样对话", f"总计 {len(conversations)} 段")
@@ -414,16 +454,13 @@ class ThinkingProfiler:
         prompt = self._COGNITIVE_PROFILE_PROMPT.format(samples=samples_block)
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是认知心理学家，专精从行为数据中推断个体认知风格。你的判断必须基于对话中的具体行为证据。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
+            raw = self._llm(
+                "cognitive_profile",
+                system_prompt="你是认知心理学家，专精从行为数据中推断个体认知风格。你的判断必须基于对话中的具体行为证据。",
+                user_prompt=prompt,
                 max_tokens=800,
             )
-            raw = (resp.choices[0].message.content or "").strip()
+            raw = raw.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
@@ -450,15 +487,20 @@ class ThinkingProfiler:
         conversations: list[dict],
         contact_registry=None,
         progress_callback=None,
+        runner=None,
     ) -> dict[str, list[dict]]:
         """Extract emotion boundaries partitioned by relationship type.
 
         Returns dict like {"partner": [...], "friend": [...], "default": [...]}.
         Only relationship types with enough data get their own boundaries.
         """
+        _runner = runner or self._runner
+
         def _progress(step, detail=""):
             if progress_callback:
                 progress_callback(step, detail)
+            if _runner:
+                _runner.update("⚡ {}: {}".format(step, detail))
             logger.info("[EmotionBoundary] %s: %s", step, detail)
 
         _progress("按关系分组", f"总计 {len(conversations)} 段")
@@ -523,16 +565,13 @@ class ThinkingProfiler:
         )
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是认知心理学家，从行为数据中推断个体情绪反应模式。只基于数据证据判断。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
+            raw = self._llm(
+                "emotion_boundaries",
+                system_prompt="你是认知心理学家，从行为数据中推断个体情绪反应模式。只基于数据证据判断。",
+                user_prompt=prompt,
                 max_tokens=1500,
             )
-            raw = (resp.choices[0].message.content or "").strip()
+            raw = raw.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
 
@@ -578,15 +617,20 @@ class ThinkingProfiler:
         self,
         conversations: list[dict],
         progress_callback=None,
+        runner=None,
     ) -> dict:
         """Extract HOW the user expresses each emotion from conversation data.
 
         Returns dict like:
         {"anger": {"style": "...", "typical_words": [...], "example": "..."}, ...}
         """
+        _runner = runner or self._runner
+
         def _progress(step, detail=""):
             if progress_callback:
                 progress_callback(step, detail)
+            if _runner:
+                _runner.update("⚡ {}: {}".format(step, detail))
             logger.info("[EmotionExpression] %s: %s", step, detail)
 
         _progress("采样对话", f"总计 {len(conversations)} 段")
@@ -607,16 +651,13 @@ class ThinkingProfiler:
         prompt = self._EMOTION_EXPRESSION_PROMPT.format(samples=samples_block)
 
         try:
-            resp = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是认知心理学家，从对话数据中分析个体的情绪表达方式。只基于数据证据判断，不要编造。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.2,
+            raw = self._llm(
+                "emotion_expression",
+                system_prompt="你是认知心理学家，从对话数据中分析个体的情绪表达方式。只基于数据证据判断，不要编造。",
+                user_prompt=prompt,
                 max_tokens=1200,
             )
-            raw = (resp.choices[0].message.content or "").strip()
+            raw = raw.strip()
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
             result = json.loads(raw)

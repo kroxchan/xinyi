@@ -222,6 +222,7 @@ class MemoryBank:
             resp = api_client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=60,
             )
             raw = resp.choices[0].message.content or "[]"
             raw = raw.strip()

@@ -79,6 +79,7 @@ class BeliefExtractor:
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.3,
+                "timeout": 60,
             }
             if self.api_provider == "openai":
                 create_kwargs["response_format"] = {"type": "json_object"}

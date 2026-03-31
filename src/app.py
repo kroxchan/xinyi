@@ -1408,11 +1408,39 @@ def check_status():
 def _step1_pipeline(runner):
     """Step 1 pipeline: clone repo + install deps + compile scanner. Runs in background."""
     global contact_registry
-    from src.data.decrypt import WeChatDecryptor, DecryptStep as DS
+    from src.data.decrypt import WeChatDecryptor, DecryptStep as DS, REPO_DIR as _REPO_DIR
     output_dir = "data/raw"
     if components:
         output_dir = components["config"]["paths"].get("raw_db_dir", "data/raw")
     dec = WeChatDecryptor(output_dir=output_dir)
+
+    # Pre-check 1: if scanner already compiled, done immediately
+    repo_abs = _REPO_DIR.resolve()
+    scanner = repo_abs / "find_all_keys_macos"
+    hook_ok = (dec.system != "Darwin") or (repo_abs / "key_hook.dylib").exists()
+    if scanner.exists() and hook_ok:
+        runner.add(DS("准备完成", True, "解密工具已就绪，无需重新准备"))
+        return
+
+    # Pre-check 2: detect critical deps (works in both dev & bundle envs)
+    missing_critical = []
+    for imp, pkg in [("Crypto", "pycryptodome"), ("zstandard", "zstandard")]:
+        try:
+            __import__(imp)
+        except ImportError:
+            missing_critical.append(pkg)
+
+    if missing_critical:
+        fallback_cmd = " ".join([_real_python(), "-m", "pip", "install"] + missing_critical)
+        fallback_html = (
+            '<span style="color:#e87c6a">⚠ 关键依赖缺失</span><br>'
+            '请在终端运行以下命令后重试：<br>'
+            f'<code style="font-size:.85em">{fallback_cmd}</code><br>'
+            '国内镜像：<br>'
+            f'<code style="font-size:.85em">{fallback_cmd} -i https://pypi.tuna.tsinghua.edu.cn/simple</code>'
+        )
+        runner.add(DS("环境检查", False, "关键依赖 " + ", ".join(missing_critical) + " 未安装", fallback_html))
+        return
 
     runner.add(DS("克隆仓库", True, "正在下载解密工具…"))
     step = _timed(runner, lambda: dec.clone_repo(),
@@ -1421,10 +1449,11 @@ def _step1_pipeline(runner):
     if not step.ok:
         return
 
-    runner.add(DS("安装依赖", True, "正在安装…"))
+    runner.add(DS("安装依赖", True, "正在检查并安装依赖…"))
     step = _timed(runner, lambda: dec.install_deps(),
                   lambda e: DS("安装依赖", True, "安装中… 已等待 {}s".format(e)))
     runner.update(step)
+    # install_deps always returns ok=True even if some are skipped; check detail for failures
 
     runner.add(DS("编译扫描器", True, "正在编译…"))
     step = _timed(runner, lambda: dec.compile_macos_scanner(),
@@ -2604,7 +2633,18 @@ def build_ui() -> gr.Blocks:
                 _model_download_timer_holder: list = []  # [Timer] set after timer is created
 
                 def _start_download():
-                    """Start model download pipeline and activate timer."""
+                    """Start model download pipeline and activate timer (skip if all cached)."""
+                    from src.utils.model_download import XINYI_MODELS, is_model_cached
+                    # Fast pre-check: if all models already cached, show friendly message
+                    if all(is_model_cached(m) for m in XINYI_MODELS):
+                        all_lines = "".join(
+                            f'<span style="color:#65a88a">✅</span> {m} <span style="color:#888;font-size:.85em">（已缓存）</span><br>'
+                            for m in XINYI_MODELS
+                        )
+                        return (
+                            all_lines,
+                            all_lines + '<br><span style="color:#65a88a">✅ 所有模型已就绪，无需重复下载。</span>',
+                        )
                     _download_intermediate_results.clear()
                     _download_final_results.clear()
                     TrainingRunner.instance().start(
@@ -2786,7 +2826,8 @@ def build_ui() -> gr.Blocks:
 
                     if not steps:
                         return (skip, skip, gr.Timer(active=active),
-                                skip, skip, skip, gr.update())
+                                skip, skip, skip, gr.update(),
+                                skip, skip)  # 9 outputs
 
                     html = _step_html(steps)
 
@@ -2795,19 +2836,22 @@ def build_ui() -> gr.Blocks:
                         if r.done:
                             s1_status = '<span style="color:#65a88a">✓ 解密工具已就绪。</span>'
                         return (html, skip, gr.Timer(active=active),
-                                skip, skip, s1_status, gr.update())
+                                skip, skip, s1_status, gr.update(),
+                                skip, skip)   # 9 outputs: step1,s3,timer,setup1,s3banner,s1status,stopbtn,dlprogress,dlstatus
 
                     if r.mode == "step3":
                         st_up = skip
                         ban_up = skip
-                        stop_vis = gr.update(visible=active)
+                        # Stop the timer once done, hide stop button when done
+                        timer_active = active and not r.done
+                        stop_vis = gr.update(visible=not r.done)
                         if r.done:
                             st_up = _setup1_status_html()
                             ban_up = _step3_decrypt_banner_html()
                             r._poll_count = 0   # reset
-                            stop_vis = gr.update(visible=False)
-                        return (skip, html, gr.Timer(active=active),
-                                st_up, ban_up, skip, stop_vis)
+                        return (skip, html, gr.Timer(active=timer_active),
+                                st_up, ban_up, skip, stop_vis,
+                                skip, skip)   # 9 items: step1,s3,timer,setup1,s3banner,s1status,stopbtn,dlprogress,dlstatus
 
                     if r.mode == "model_download":
                         # Build progress from _download_intermediate_results

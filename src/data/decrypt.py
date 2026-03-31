@@ -20,27 +20,105 @@ def _real_python() -> str:
     bundle binary itself; invoking it recursively deadlocks.
     We detect bundle (sys._MEIPASS) and fall back to the macOS system Python
     via xcrun, which is guaranteed to exist on every macOS system.
+    On a PyInstaller Windows .exe bundle sys.executable is the .exe itself,
+    which also deadlocks; we search for the real python.exe alongside it.
     On non-bundle platforms, returns sys.executable unchanged.
     """
     import sys as _sys
     import pathlib as _pathlib
 
-    # Detect PyInstaller macOS bundle
+    # Detect PyInstaller bundle
     meipass = getattr(_sys, "_MEIPASS", None)
+
     if meipass:
-        # Try xcrun python3 first — guaranteed to exist on every macOS
-        import subprocess as _subprocess
-        try:
-            r = _subprocess.run(
-                ["xcrun", "python3", "-c", "import sys; print(sys.executable)"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0:
-                return r.stdout.strip()
-        except Exception:
-            pass
-        # Fallback: system python3
-        return "/usr/bin/python3"
+        system = _sys.platform
+        if system == "darwin":
+            # macOS bundle: use xcrun python3 — guaranteed to exist
+            import subprocess as _subprocess
+            try:
+                r = _subprocess.run(
+                    ["xcrun", "python3", "-c", "import sys; print(sys.executable)"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode == 0:
+                    return r.stdout.strip()
+            except Exception:
+                pass
+            return "/usr/bin/python3"
+
+        if system == "win32":
+            # Windows bundle: find real python.exe next to the .exe or in known paths
+            import subprocess as _subprocess
+            exe_dir = _pathlib.Path(_sys.executable).parent
+
+            # 1. python.exe next to the bundle (common with some packagers)
+            nearby = exe_dir / "python.exe"
+            if nearby.exists():
+                return str(nearby)
+
+            # 2. python.exe in parent directories (venv layout)
+            for _ in range(4):
+                exe_dir = exe_dir.parent
+                nearby = exe_dir / "python.exe"
+                if nearby.exists():
+                    return str(nearby)
+
+            # 3. Search in common user-level Python install locations
+            import os as _os
+            local_app = _os.environ.get("LOCALAPPDATA", "")
+            search_roots = []
+            if local_app:
+                search_roots.append(_pathlib.Path(local_app) / "Programs" / "Python")
+            # Also try to find via `py -0` (Python Launcher for Windows)
+            try:
+                r = _subprocess.run(
+                    ["py", "-0a"], capture_output=True, text=True, timeout=15,
+                    creationflags=_subprocess.CREATE_NO_WINDOW if hasattr(_subprocess, "CREATE_NO_WINDOW") else 0,
+                )
+                if r.returncode == 0:
+                    lines = r.stdout.strip().splitlines()
+                    # Find the latest version (e.g. "-3.11" or "-3.11-64")
+                    py_lines = [l.strip() for l in lines if l.strip().startswith("-3.")]
+                    if py_lines:
+                        latest = py_lines[0].split()[0].lstrip("-")
+                        r2 = _subprocess.run(
+                            ["py", f"-{latest}", "-c", "import sys; print(sys.executable)"],
+                            capture_output=True, text=True, timeout=15,
+                        )
+                        if r2.returncode == 0:
+                            return r2.stdout.strip()
+            except Exception:
+                pass
+
+            # 4. Search in search_roots
+            for root in search_roots:
+                if not root.exists():
+                    continue
+                try:
+                    for ver_dir in sorted(root.iterdir(), reverse=True):
+                        if ver_dir.is_dir():
+                            python_exe = ver_dir / "python.exe"
+                            if python_exe.exists():
+                                return str(python_exe)
+                            # Also check Scripts subfolder
+                            scripts = ver_dir / "Scripts" / "python.exe"
+                            if scripts.exists():
+                                return str(scripts)
+                except Exception:
+                    pass
+
+            # Fallback: use py launcher with latest available Python
+            try:
+                r = _subprocess.run(
+                    ["py", "-3", "-c", "import sys; print(sys.executable)"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if r.returncode == 0:
+                    return r.stdout.strip()
+            except Exception:
+                pass
+
+            return str(_sys.executable)  # last resort, may not work in bundle
 
     return _sys.executable
 
@@ -287,7 +365,6 @@ class WeChatDecryptor:
             return DecryptStep("安装依赖", True, "无 requirements.txt，跳过")
 
         SKIP_PKGS = {"mcp"}
-        # Critical = blocks decryption; others are optional
         CRITICAL_PKGS = {"pycryptodome"}
 
         with open(req_file, encoding="utf-8") as f:
@@ -297,8 +374,6 @@ class WeChatDecryptor:
             import re as _re
             return _re.split(r"[><=!\[;]", line)[0].strip().lower()
 
-        # Module name → package name mapping for find_spec
-        # (some packages use different import names)
         IMPORT_NAME = {
             "pycryptodome": "Crypto",
             "zstandard": "zstandard",
@@ -306,29 +381,21 @@ class WeChatDecryptor:
         }
 
         def _is_installed(line: str) -> bool:
-            """Check if a package is importable.
-
-            Works in both dev environments and PyInstaller bundles.
-            Uses find_spec to check the filesystem rather than the
-            distribution metadata registry (which is empty in bundles).
-            """
             try:
                 import re as _re
                 from importlib.util import find_spec as _find_spec
                 pname = _re.split(r"[><=!\[;]", line)[0].strip().lower()
-                # Try the canonical import name first
                 for pkg, imp in IMPORT_NAME.items():
                     if pname.startswith(pkg):
                         if _find_spec(imp) is not None:
                             return True
-                # Fall back: try package name directly
                 return _find_spec(pname.replace("-", "_")) is not None
             except Exception:
                 return False
 
         skipped_compat: list[str] = []
-        already_ok:     list[str] = []
-        to_install:     list[str] = []
+        already_ok: list[str] = []
+        to_install: list[str] = []
 
         for line in raw_lines:
             pname = _pkg_name(line)
@@ -340,50 +407,72 @@ class WeChatDecryptor:
             else:
                 to_install.append(line)
 
+        if not to_install:
+            return DecryptStep(
+                "安装依赖", True,
+                "所有依赖已安装 ✓（" + ", ".join(already_ok) + "）",
+                "已有: " + ", ".join(already_ok) if already_ok else "",
+            )
+
         failed: list[str] = []
         newly_installed: list[str] = []
+        last_error_msg: str = ""
 
-        if to_install:
-            # Batch install first (try mirrors)
-            for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
-                cmd = [_real_python(), "-m", "pip", "install", "--quiet"] + to_install
+        # Build fallback manual install command
+        fallback_pkgs = " ".join(to_install)
+        fallback_cmd_template = (
+            '<code style="font-size:.85em">{py} -m pip install {pkgs}</code><br>'
+            '国内镜像：<code style="font-size:.85em">{py} -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple {pkgs}</code>'
+        )
+
+        def _pip_install(args: list) -> bool:
+            """Run pip install, return True on success. Catches all subprocess errors."""
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=180)
+                return r.returncode == 0
+            except FileNotFoundError:
+                return False
+            except subprocess.TimeoutExpired:
+                return False
+            except OSError:
+                return False
+
+        def _get_pip_cmd(python_path: str) -> list:
+            return [python_path, "-m", "pip", "install", "--quiet"]
+
+        # Try system python first, then fall back to sys.executable
+        python_path = _real_python()
+        mirrors = [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]
+
+        for pkg_line in list(to_install):
+            pname = _pkg_name(pkg_line)
+            installed = False
+            for mirror in mirrors:
+                cmd = _get_pip_cmd(python_path) + ([pkg_line] if len(to_install) == 1 else [pkg_line])
                 if mirror:
                     cmd += ["-i", mirror]
-                try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-                    if r.returncode == 0:
-                        newly_installed = [_pkg_name(l) for l in to_install]
-                        to_install = []
+                if _pip_install(cmd):
+                    newly_installed.append(pname)
+                    installed = True
+                    break
+                # If python_path was bad, retry with sys.executable
+                if python_path != sys.executable:
+                    alt_python = sys.executable
+                    alt_cmd = _get_pip_cmd(alt_python) + ([pkg_line] if len(to_install) == 1 else [pkg_line])
+                    if mirror:
+                        alt_cmd += ["-i", mirror]
+                    if _pip_install(alt_cmd):
+                        newly_installed.append(pname)
+                        python_path = alt_python
+                        installed = True
                         break
-                    # Log stderr for debugging
-                    if r.stderr:
-                        logger.warning("pip batch install failed (mirror=%s): %s", mirror, r.stderr[:200])
-                except subprocess.TimeoutExpired:
-                    pass
+            if not installed:
+                failed.append(pname)
 
-            # Per-package fallback + collect failed
-            if to_install:
-                for line in to_install:
-                    pname = _pkg_name(line)
-                    installed_this = False
-                    for mirror in [None, "https://pypi.tuna.tsinghua.edu.cn/simple"]:
-                        cmd = [_real_python(), "-m", "pip", "install", "--quiet", line]
-                        if mirror:
-                            cmd += ["-i", mirror]
-                        try:
-                            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                            if r.returncode == 0:
-                                newly_installed.append(pname)
-                                installed_this = True
-                                break
-                        except subprocess.TimeoutExpired:
-                            pass
-                    if not installed_this:
-                        failed.append(pname)
-
+        # Build detail message
         detail_parts = []
         if newly_installed:
-            detail_parts.append("新装: " + ", ".join(newly_installed))
+            detail_parts.append("已装: " + ", ".join(newly_installed))
         if already_ok:
             detail_parts.append("已有: " + ", ".join(already_ok))
         if skipped_compat:
@@ -394,19 +483,33 @@ class WeChatDecryptor:
 
         critical_failed = CRITICAL_PKGS & set(failed)
         if critical_failed:
-            fallback_cmd = " ".join([_real_python(), "-m", "pip", "install"] + failed)
+            fallback = fallback_cmd_template.format(
+                py=python_path if python_path != sys.executable else sys.executable,
+                pkgs=" ".join(failed),
+            )
             return DecryptStep(
                 "安装依赖", False,
-                "关键包 {} 安装失败，请检查网络后重试".format(", ".join(critical_failed)),
-                "手动安装命令（复制到终端运行）：\n" + fallback_cmd + "\n\n"
-                "提示：国内用户可加镜像：\n" + fallback_cmd.replace("-m pip install", "-m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple"),
+                "关键包 {} 安装失败，请在终端手动运行以下命令：".format(", ".join(critical_failed)),
+                fallback,
             )
-        summary = "依赖安装完成"
-        if skipped_compat:
-            summary += "（跳过 {} 个不兼容包）".format(len(skipped_compat))
-        if newly_installed:
-            summary = "已安装 " + ", ".join(newly_installed) + "，" + summary
-        return DecryptStep("安装依赖", True, summary, detail)
+
+        if newly_installed and not failed:
+            return DecryptStep("安装依赖", True, "已安装 " + ", ".join(newly_installed) + "，依赖安装完成", detail)
+        if not newly_installed and not failed and already_ok:
+            return DecryptStep("安装依赖", True, "所有依赖已安装 ✓（" + ", ".join(already_ok) + "）", detail)
+        # Some non-critical failed
+        if failed:
+            fallback = fallback_cmd_template.format(
+                py=python_path if python_path != sys.executable else sys.executable,
+                pkgs=" ".join(failed),
+            )
+            return DecryptStep(
+                "安装依赖", True,
+                "非关键包 " + ", ".join(failed) + " 安装失败，可手动安装后继续",
+                fallback + "\n\n" + detail,
+            )
+
+        return DecryptStep("安装依赖", True, "依赖安装完成", detail)
 
     # ------------------------------------------------------------------
     # Step 3: Compile macOS scanner (macOS only)
@@ -539,8 +642,11 @@ class WeChatDecryptor:
             if not script.exists():
                 return DecryptStep("提取密钥", False, "未找到 find_all_keys.py")
             try:
+                # Use _real_python() so the subprocess actually runs a Python
+                # interpreter (not the .app binary in a PyInstaller bundle).
+                python_path = self._real_python()
                 result = subprocess.run(
-                    [sys.executable, str(script.resolve())],
+                    [python_path, str(script.resolve())],
                     capture_output=True, text=True, timeout=60,
                     cwd=str(REPO_DIR.resolve()),
                 )
@@ -575,6 +681,47 @@ class WeChatDecryptor:
         candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
         return candidates[0]
 
+    @staticmethod
+    def _real_python() -> str:
+        """Return path to a usable Python interpreter for running pip.
+
+        In a PyInstaller macOS .app bundle sys.executable points to the
+        bundle binary itself; invoking it recursively deadlocks.
+        We detect bundle (sys._MEIPASS) and fall back to the macOS system Python
+        via xcrun, which is guaranteed to exist on every macOS system.
+        """
+        import sys as _sys
+        import pathlib as _pathlib
+
+        meipass = getattr(_sys, "_MEIPASS", None)
+        if meipass:
+            system = _sys.platform
+            if system == "darwin":
+                import subprocess as _subprocess
+                try:
+                    r = _subprocess.run(
+                        ["xcrun", "python3", "-c", "import sys; print(sys.executable)"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if r.returncode == 0:
+                        return r.stdout.strip()
+                except Exception:
+                    pass
+                return "/usr/bin/python3"
+            if system == "win32":
+                import subprocess as _subprocess
+                exe_dir = _pathlib.Path(_sys.executable).parent
+                nearby = exe_dir / "python.exe"
+                if nearby.exists():
+                    return str(nearby)
+                for _ in range(4):
+                    exe_dir = exe_dir.parent
+                    nearby = exe_dir / "python.exe"
+                    if nearby.exists():
+                        return str(nearby)
+                return str(_sys.executable)
+        return sys.executable
+
     def decrypt_databases(self) -> DecryptStep:
         # --- Fast-fail pre-check ---
         try:
@@ -608,8 +755,11 @@ class WeChatDecryptor:
         import subprocess as _subprocess
 
         try:
+            # Use _real_python() instead of sys.executable so the subprocess
+            # actually runs a Python interpreter (not the .app binary in a bundle).
+            python_path = self._real_python()
             proc = _subprocess.Popen(
-                [sys.executable, str(script)],
+                [python_path, str(script)],
                 stdout=_subprocess.PIPE,
                 stderr=_subprocess.PIPE,
                 text=True,
@@ -623,16 +773,16 @@ class WeChatDecryptor:
             if proc.returncode != 0:
                 if "Crypto" in stderr or "pycryptodome" in stderr:
                     step.ok = False
-                    step.summary = "pycryptodome 缺失，请回到第 1 步重新准备解密工具"
+                    step.message = "pycryptodome 缺失，请回到第 1 步重新准备解密工具"
                     step.detail = stderr[-500:]
                 else:
                     step.ok = False
-                    step.summary = "解密失败"
+                    step.message = "解密失败"
                     step.detail = stderr[-500:]
             else:
                 db_count = len(list(self.output_dir.rglob("*.db")))
                 step.ok = True
-                step.summary = "解密完成，{} 个数据库文件".format(db_count)
+                step.message = "解密完成，{} 个数据库文件".format(db_count)
 
             return step
         except Exception as e:

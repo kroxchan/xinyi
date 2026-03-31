@@ -75,24 +75,38 @@ def _timed(runner, fn, pending_fn, interval=15):
     return box[0]
 
 
-def _retry_api(fn, runner, label, max_retries=3, backoff=10):
-    """Run *fn()* with retries on transient API errors (502, 503, timeout, etc.)."""
+def _retry_api(fn, runner, label, max_retries=3, backoff=10, total_timeout=300):
+    """Run *fn()* with retries on transient API errors (502, 503, timeout, etc.).
+
+    total_timeout caps the entire retry loop so the pipeline never hangs indefinitely.
+    """
     import time as _rt
+    start = _rt.time()
     for attempt in range(1, max_retries + 1):
         try:
             return fn()
         except Exception as exc:
+            elapsed = _rt.time() - start
             is_transient = any(
                 k in str(exc).lower()
                 for k in ("502", "503", "504", "upstream", "timeout", "rate")
             )
-            if attempt < max_retries and is_transient:
+            if attempt < max_retries and is_transient and elapsed < total_timeout - backoff:
                 wait = backoff * attempt
-                runner.update("{} 第{}次请求失败 ({}), {}秒后重试…".format(
-                    label, attempt, type(exc).__name__, wait))
+                remaining = total_timeout - elapsed
+                wait = min(wait, remaining)
+                runner.update(
+                    "{} 第{}次请求失败 ({}), {:.0f}s后重试（剩余超时{:.0f}s）…".format(
+                        label, attempt, type(exc).__name__, wait, remaining
+                    )
+                )
                 _rt.sleep(wait)
             else:
-                raise
+                raise TimeoutError(
+                    "{} 调用失败（已重试{}次，耗时{:.0f}s）：{}".format(
+                        label, attempt - 1, _rt.time() - start, exc
+                    )
+                ) from exc
 
 
 def _get_db_mtime(config: dict) -> float:
@@ -592,14 +606,21 @@ class TrainingPipeline:
                     base_url=api_cfg.get("base_url"),
                     default_headers=api_cfg.get("headers", {}),
                 )
-                tp = ThinkingProfiler(tp_client, api_cfg.get("model", "gpt-4o"))
-                _thinking = _retry_api(
-                    lambda: tp.train(conversations),
-                    _runner, "⚠ 思维训练",
+                tp = ThinkingProfiler(tp_client, api_cfg.get("model", "gpt-4o"), runner=_runner)
+
+                def _do_think():
+                    return tp.train(conversations, runner=_runner)
+
+                _thinking = _timed(
+                    _runner,
+                    _do_think,
+                    lambda e: DS("思维训练", True, "进行中… 已等待 {:.0f}s".format(e)),
+                    interval=30,
                 )
                 _thinking = _thinking or ""
                 tp.save(_thinking, str(think_path))
                 self._thinking = _thinking
+                _runner.update("✓ 思维模型已保存")
             except Exception as e:
                 logger.warning("Thinking profiler training failed: %s", e)
                 self._thinking = ""
@@ -614,10 +635,12 @@ class TrainingPipeline:
                     base_url=api_cfg.get("base_url"),
                     default_headers=api_cfg.get("headers", {}),
                 )
-                tp_cog = ThinkingProfiler(cog_client, api_cfg.get("model", "gpt-4o"))
-                cog_profile = _retry_api(
-                    lambda: tp_cog.extract_cognitive_profile(conversations),
-                    _runner, "⚠ 认知参数",
+                tp_cog = ThinkingProfiler(cog_client, api_cfg.get("model", "gpt-4o"), runner=_runner)
+                cog_profile = _timed(
+                    _runner,
+                    lambda: tp_cog.extract_cognitive_profile(conversations, runner=_runner),
+                    lambda e: DS("认知参数", True, "提取中… 已等待 {:.0f}s".format(e)),
+                    interval=30,
                 )
                 cog_profile = cog_profile or {}
                 if cog_profile:
@@ -640,11 +663,13 @@ class TrainingPipeline:
                     base_url=api_cfg.get("base_url"),
                     default_headers=api_cfg.get("headers", {}),
                 )
-                tp_eb = ThinkingProfiler(eb_client, api_cfg.get("model", "gpt-4o"))
-                emo_boundaries = _retry_api(
+                tp_eb = ThinkingProfiler(eb_client, api_cfg.get("model", "gpt-4o"), runner=_runner)
+                emo_boundaries = _timed(
+                    _runner,
                     lambda: tp_eb.extract_emotion_boundaries(
-                        conversations, contact_registry=_contact_registry),
-                    _runner, "⚠ 情绪边界",
+                        conversations, contact_registry=_contact_registry, runner=_runner),
+                    lambda e: DS("情绪边界", True, "提取中… 已等待 {:.0f}s".format(e)),
+                    interval=30,
                 )
                 emo_boundaries = emo_boundaries or {}
                 if emo_boundaries:
@@ -667,10 +692,12 @@ class TrainingPipeline:
                     base_url=api_cfg.get("base_url"),
                     default_headers=api_cfg.get("headers", {}),
                 )
-                tp_expr = ThinkingProfiler(expr_client, api_cfg.get("model", "gpt-4o"))
-                emo_expression = _retry_api(
-                    lambda: tp_expr.extract_emotion_expression_style(conversations),
-                    _runner, "⚠ 情绪表达",
+                tp_expr = ThinkingProfiler(expr_client, api_cfg.get("model", "gpt-4o"), runner=_runner)
+                emo_expression = _timed(
+                    _runner,
+                    lambda: tp_expr.extract_emotion_expression_style(conversations, runner=_runner),
+                    lambda e: DS("情绪表达", True, "提取中… 已等待 {:.0f}s".format(e)),
+                    interval=30,
                 )
                 emo_expression = emo_expression or {}
                 if emo_expression:
@@ -720,7 +747,9 @@ class TrainingPipeline:
             bg.save()
             ll = components["learning_loop"]
             try:
+                _runner.update("⚡ 信念图谱提取中…")
                 ll.batch_extract_beliefs(conversations, top_n_contacts=1, samples_per_contact=20)
+                _runner.update("✓ 信念图谱已生成")
             except Exception as e:
                 logger.warning("Belief extraction failed: %s", e)
 
@@ -744,8 +773,10 @@ class TrainingPipeline:
                 default_headers=api_cfg.get("headers", {}),
             )
             try:
+                _runner.update("⚡ 记忆库提取中…")
                 mb.batch_extract(
                     conversations, mb_client, api_cfg.get("model", "gpt-4o"))
+                _runner.update("✓ 记忆库已生成")
             except Exception as e:
                 logger.warning("Memory extraction failed: %s", e)
 
