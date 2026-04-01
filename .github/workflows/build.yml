@@ -53,6 +53,33 @@ jobs:
       - name: Build Windows exe
         run: pyinstaller xinyi-windows.spec --clean
 
+      - name: Smoke test Windows package
+        shell: powershell
+        run: |
+          $env:XINYI_INBROWSER = "0"
+          $proc = Start-Process -FilePath "$PWD\dist\xinyi\xinyi.exe" -PassThru
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 2
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:7872/" -UseBasicParsing -TimeoutSec 5
+                if ($resp.StatusCode -eq 200) {
+                  $ok = $true
+                  break
+                }
+              } catch {
+              }
+            }
+            if (-not $ok) {
+              throw "Smoke test failed: http://127.0.0.1:7872/ did not return HTTP 200"
+            }
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force
+            }
+          }
+
       - name: Package as ZIP
         shell: powershell
         run: Compress-Archive -Path dist\xinyi -DestinationPath xinyi-windows.zip

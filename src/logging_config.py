@@ -7,6 +7,18 @@ from pathlib import Path
 from datetime import datetime
 
 
+def _make_console_streams_safe() -> None:
+    """Avoid Windows console encoding errors when logs contain symbols."""
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
+
 def setup_logging(
     log_dir: str | None = None,
     log_level: str | None = None,
@@ -19,6 +31,8 @@ def setup_logging(
     Reads settings from src.config if not overridden.
     Dev mode (XINYI_ENV=dev) auto-upgrades log level to DEBUG.
     """
+    _make_console_streams_safe()
+
     try:
         cfg = None
         try:

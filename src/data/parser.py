@@ -8,6 +8,11 @@ from rich.console import Console
 console = Console()
 
 
+def _status_label(ok: bool) -> str:
+    """Use ASCII-only status labels so Windows GBK consoles do not explode."""
+    return "[OK]" if ok else "[X]"
+
+
 class WeChatDBParser:
     def __init__(self, db_dir: str) -> None:
         self.set_db_dir(db_dir)
@@ -43,7 +48,7 @@ class WeChatDBParser:
             self.message_dbs = [f for f in all_dbs if "message" in f.name and "_fts" not in f.name and "_resource" not in f.name]
 
         console.print(f"[bold]数据库目录:[/bold] {self.db_dir}")
-        console.print(f"[bold]联系人数据库:[/bold] {'✓' if self.contact_db.exists() else '✗'}")
+        console.print(f"[bold]联系人数据库:[/bold] {_status_label(self.contact_db.exists())}")
         console.print(f"[bold]消息数据库:[/bold] {len(self.message_dbs)} 个文件")
 
     def _query_db(self, db_path: Path, sql: str, params: tuple = ()) -> list[dict]:
